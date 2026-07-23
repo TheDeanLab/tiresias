@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tiresias"
+version = "0.1.0"
+description = "GPU blind PSF estimation and cuCIM Richardson-Lucy restoration."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "The University of Texas Southwestern Medical Center" }
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Image Processing",
+]
+dependencies = [
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "tifffile>=2024.0",
+  "psfmodels>=0.3",
+  "cupy-cuda11x>=13,<14",
+  "cucim>=23.6",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+]
+
+[project.scripts]
+tiresias-estimate-psf = "tiresias.cli:estimate_psf_main"
+tiresias-deconvolve = "tiresias.cli:deconvolve_main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
