@@ -1,5 +1,5 @@
 <h1 align="center">Tiresias</h1>
-<h2 align="center">GPU-first blind PSF estimation and cuCIM Richardson-Lucy restoration for 3-D microscopy.</h2>
+<h2 align="center">GPU-first blind PSF estimation for 3-D microscopy.</h2>
 
 Tiresias is an open source Python package for blind point-spread-function (PSF)
 estimation and cuCIM Richardson-Lucy deconvolution from 3-D TIFF image
