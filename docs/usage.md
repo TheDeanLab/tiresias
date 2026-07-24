@@ -9,8 +9,7 @@ backend.
 
 ## Install
 
-The package metadata targets CUDA 11.x through `cupy-cuda11x`, matching the
-CUDA 11.8 environment used by the source workflow.
+The package metadata targets CUDA 11.x through `cupy-cuda11x`.
 
 ```bash
 cd tiresias
@@ -44,8 +43,7 @@ Tiresias.
   seed has more Z planes than the blind window, Tiresias center-crops it in Z
   and renormalizes it.
 
-Tiresias currently excludes Astrocyte/Nextflow orchestration, MATLAB fallback,
-and OME-Zarr workflow IO.
+Tiresias currently excludes MATLAB fallback and OME-Zarr workflow I/O.
 
 ## Estimate a PSF
 
