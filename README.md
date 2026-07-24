@@ -10,18 +10,16 @@ Tiresias is an open source Python package for blind point-spread-function (PSF)
 estimation and cuCIM Richardson-Lucy deconvolution from 3-D TIFF image
 volumes.
 
-## Blind PSF Estimation Scope
+## Package Scope
 
-Tiresias focuses on the numerical core of the internal Astrocyte/Nextflow
-workflow, not the orchestration layer. It extracts reusable GPU components for
-PSF estimation and restoration so the deconvolution path can be reused outside
-its original pipeline.
+Tiresias is a reusable Python package for blind PSF estimation and deconvolution.
+It provides compact, GPU-accelerated kernels and command-line entrypoints for
+direct use in microscopy image-processing pipelines.
 
 The package intentionally excludes:
 
-- Nextflow workflow orchestration.
-- MATLAB compatibility and MATLAB runtime handling.
-- Astrocyte-specific acquisition layout parsing.
+- MATLAB runtime compatibility.
+- Non-3D image support.
 
 Production users should use:
 
