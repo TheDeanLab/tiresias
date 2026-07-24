@@ -325,6 +325,6 @@ python -m pytest
 
 ## License
 
-Tiresias is licensed under the Apache 2.0 License.
+Tiresias is licensed under the GNU General Public License v3.0.
 
 See `LICENSE` for details.
