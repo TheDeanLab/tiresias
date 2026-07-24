@@ -11,3 +11,4 @@ dist/
 *.tif
 *.tiff
 .psf_cache/
+docs/_site/
