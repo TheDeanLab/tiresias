@@ -11,13 +11,20 @@ from tifffile import imread, imwrite
 from .blind_rl import deconvolve_with_cucim
 from .seeds import generate_theoretical_psf, resolve_dxy
 from .tiling import (
+    DEFAULT_ADAPTIVE_KEEP_TILES,
+    DEFAULT_ADAPTIVE_SCOUT_ITERS,
     DEFAULT_BLIND_CHUNK_XY,
     DEFAULT_BLIND_LATENT_UPDATE_PERIOD,
     DEFAULT_BLIND_MAX_TILES,
     DEFAULT_BLIND_PEAK_GAMMA_MAX,
     DEFAULT_BLIND_PEAK_NORMALIZATION,
     DEFAULT_BLIND_Z_SLICES,
+    DEFAULT_COARSE_REGION_COLUMNS,
+    DEFAULT_COARSE_REGION_LIMIT,
+    DEFAULT_COARSE_REGION_ROWS,
     DEFAULT_SNR_WEIGHT_CAP,
+    TILE_SELECTION_STRATEGIES,
+    BLIND_TILE_SELECTION_STRATEGY,
     estimate_psf_from_chunks,
 )
 
@@ -77,6 +84,33 @@ def build_estimate_psf_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--blind-z-slices", dest="blind_z_slices", type=int, default=DEFAULT_BLIND_Z_SLICES)
     parser.add_argument("--snr-weight-cap", dest="snr_weight_cap", type=float, default=DEFAULT_SNR_WEIGHT_CAP)
+    parser.add_argument(
+        "--cupy-fft-engine",
+        dest="cupy_fft_engine",
+        choices=("cupyx", "scout"),
+        default="scout",
+    )
+    parser.add_argument(
+        "--adaptive-scout-iters",
+        dest="adaptive_scout_iters",
+        type=int,
+        default=DEFAULT_ADAPTIVE_SCOUT_ITERS,
+    )
+    parser.add_argument(
+        "--adaptive-keep-tiles",
+        dest="adaptive_keep_tiles",
+        type=int,
+        default=DEFAULT_ADAPTIVE_KEEP_TILES,
+    )
+    parser.add_argument(
+        "--tile-selection-strategy",
+        dest="tile_selection_strategy",
+        choices=TILE_SELECTION_STRATEGIES,
+        default=BLIND_TILE_SELECTION_STRATEGY,
+    )
+    parser.add_argument("--coarse-region-rows", dest="coarse_region_rows", type=int, default=DEFAULT_COARSE_REGION_ROWS)
+    parser.add_argument("--coarse-region-columns", dest="coarse_region_columns", type=int, default=DEFAULT_COARSE_REGION_COLUMNS)
+    parser.add_argument("--coarse-region-limit", dest="coarse_region_limit", type=int, default=DEFAULT_COARSE_REGION_LIMIT)
     _add_optical_arguments(parser)
     return parser
 
@@ -120,8 +154,15 @@ def estimate_psf_main(argv: Sequence[str] | None = None) -> None:
         peak_normalization=args.peak_normalization,
         peak_gamma_max=args.peak_gamma_max,
         latent_update_period=args.latent_update_period,
+        cupy_fft_engine=args.cupy_fft_engine,
         blind_z_slices=args.blind_z_slices,
         blind_max_tiles=args.blind_max_tiles,
+        adaptive_scout_iters=args.adaptive_scout_iters,
+        adaptive_keep_tiles=args.adaptive_keep_tiles,
+        tile_selection_strategy=args.tile_selection_strategy,
+        coarse_region_rows=args.coarse_region_rows,
+        coarse_region_columns=args.coarse_region_columns,
+        coarse_region_limit=args.coarse_region_limit,
     )
     imwrite(args.output_path, estimated)
 

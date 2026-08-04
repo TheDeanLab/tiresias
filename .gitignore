@@ -5,9 +5,12 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.nextflow/
+.nextflow.log*
 build/
 dist/
 .venv/
+work/
 *.tif
 *.tiff
 .psf_cache/

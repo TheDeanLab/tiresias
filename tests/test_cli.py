@@ -45,7 +45,49 @@ class CliTests(unittest.TestCase):
         self.assertEqual(generate.call_args.kwargs["dxy"], 0.108)
         self.assertEqual(estimate.call_args.kwargs["image_path"], Path("volume.tif"))
         self.assertEqual(estimate.call_args.kwargs["n_iters"], 4)
+        self.assertEqual(estimate.call_args.kwargs["cupy_fft_engine"], "scout")
         imwrite.assert_called_once_with(Path("estimated_psf.tif"), estimated)
+
+    def test_estimate_psf_cli_accepts_scout_options(self):
+        from tiresias import cli
+
+        seed = np.ones((3, 3, 3), dtype=np.float32) / 27.0
+
+        with (
+            mock.patch.object(cli, "generate_theoretical_psf", return_value=seed),
+            mock.patch.object(cli, "estimate_psf_from_chunks", return_value=seed) as estimate,
+            mock.patch.object(cli, "imwrite"),
+        ):
+            cli.estimate_psf_main(
+                [
+                    "--image-path",
+                    "volume.tif",
+                    "--output-path",
+                    "estimated_psf.tif",
+                    "--dxy",
+                    "0.108",
+                    "--dz",
+                    "0.3",
+                    "--wavelength",
+                    "0.561",
+                    "--detection-na",
+                    "1.0",
+                    "--ni",
+                    "1.33",
+                    "--ns",
+                    "1.33",
+                    "--cupy-fft-engine",
+                    "scout",
+                    "--adaptive-scout-iters",
+                    "2",
+                    "--adaptive-keep-tiles",
+                    "6",
+                ]
+            )
+
+        self.assertEqual(estimate.call_args.kwargs["cupy_fft_engine"], "scout")
+        self.assertEqual(estimate.call_args.kwargs["adaptive_scout_iters"], 2)
+        self.assertEqual(estimate.call_args.kwargs["adaptive_keep_tiles"], 6)
 
     def test_deconvolve_cli_reads_inputs_and_writes_restored_tiff(self):
         from tiresias import cli

@@ -162,6 +162,7 @@ Core options:
 - `--chunk-xy`: requested XY tile core size (default `256`).
 - `--blind-max-tiles`: max representative tiles (`16`, `0` uses all tiles).
 - `--blind-z-slices`: number of z planes to use (`128`, `0` uses full Z).
+- `--cupy-fft-engine`: `scout` or `cupyx` (default `scout`).
 - `--pad-xy`: halo around XY tile reads (default `32`).
 - `--pad-z`: Z padding inside each tile (default `20`).
 - `--prefetch-chunks`: queued worker concurrency prefetch.
@@ -240,6 +241,7 @@ psf = estimate_psf_from_chunks(
     chunk_xy=256,
     blind_max_tiles=16,
     blind_z_slices=128,
+    cupy_fft_engine="scout",
     pad_xy=32,
     pad_z=20,
 )

@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 
 import numpy as np
+from scipy import fft as scipy_fft
 from scipy.signal import fftconvolve
 
 from tiresias import blind_rl
@@ -68,6 +69,51 @@ def _fake_gpu_modules(events, richardson_lucy):
     }
 
 
+def _fake_numpy_cupy_module():
+    class Device:
+        def __init__(self, device_id):
+            self.device_id = device_id
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return None
+
+    class PlanCache:
+        def clear(self):
+            pass
+
+    class MemoryPool:
+        def free_all_blocks(self):
+            pass
+
+    return types.SimpleNamespace(
+        asarray=lambda values, dtype=None: np.asarray(values, dtype=dtype),
+        asnumpy=lambda values: np.asarray(values).copy(),
+        broadcast_to=np.broadcast_to,
+        cuda=types.SimpleNamespace(
+            Device=Device,
+            Stream=types.SimpleNamespace(
+                null=types.SimpleNamespace(synchronize=lambda: None)
+            )
+        ),
+        fft=types.SimpleNamespace(
+            rfftn=scipy_fft.rfftn,
+            irfftn=scipy_fft.irfftn,
+            config=types.SimpleNamespace(get_plan_cache=lambda: PlanCache()),
+        ),
+        float32=np.float32,
+        float64=np.float64,
+        flip=np.flip,
+        get_default_memory_pool=lambda: MemoryPool(),
+        maximum=np.maximum,
+        nan_to_num=np.nan_to_num,
+        ones_like=np.ones_like,
+        zeros=np.zeros,
+    )
+
+
 class BlindRlTests(unittest.TestCase):
     def test_convolution_adjoints_match_for_even_psf(self):
         rng = np.random.default_rng(7)
@@ -82,6 +128,296 @@ class BlindRlTests(unittest.TestCase):
         expected = np.vdot(forward, values)
         self.assertTrue(np.allclose(expected, np.vdot(image, image_back), rtol=2e-5))
         self.assertTrue(np.allclose(expected, np.vdot(psf, psf_back), rtol=2e-5))
+
+    def test_fft_convolution_engine_matches_fftconvolve_for_mixed_parity_shapes(self):
+        rng = np.random.default_rng(13)
+        image = rng.random((5, 6, 7), dtype=np.float32)
+        psf = rng.random((3, 4, 5), dtype=np.float32)
+        values = rng.random(image.shape, dtype=np.float32)
+        engine = blind_rl.FftConvolutionEngine(np, image.shape, psf.shape)
+
+        np.testing.assert_allclose(
+            engine.convolve_same(image, psf),
+            blind_rl.convolve_same(image, psf, fftconvolve),
+            rtol=2e-5,
+            atol=2e-5,
+        )
+        np.testing.assert_allclose(
+            engine.image_adjoint(values, psf),
+            blind_rl.image_adjoint(values, psf, np, fftconvolve),
+            rtol=2e-5,
+            atol=2e-5,
+        )
+        np.testing.assert_allclose(
+            engine.psf_adjoint(values, image),
+            blind_rl.psf_adjoint(values, image, psf.shape, np, fftconvolve),
+            rtol=2e-5,
+            atol=2e-5,
+        )
+
+    def test_batched_fft_engine_matches_single_tile_engine(self):
+        rng = np.random.default_rng(17)
+        images = rng.random((3, 5, 6, 7), dtype=np.float32)
+        psfs = rng.random((3, 3, 4, 5), dtype=np.float32)
+        values = rng.random(images.shape, dtype=np.float32)
+        batch_engine = blind_rl.BatchedFftConvolutionEngine(
+            np, images.shape[1:], psfs.shape[1:], batch_size=3
+        )
+
+        same = batch_engine.convolve_same(images, psfs)
+        image_back = batch_engine.image_adjoint(values, psfs)
+        psf_back = batch_engine.psf_adjoint(values, images)
+
+        for index in range(images.shape[0]):
+            single = blind_rl.FftConvolutionEngine(
+                np, images.shape[1:], psfs.shape[1:]
+            )
+            np.testing.assert_allclose(
+                same[index],
+                single.convolve_same(images[index], psfs[index]),
+                rtol=2e-5,
+                atol=2e-5,
+            )
+            np.testing.assert_allclose(
+                image_back[index],
+                single.image_adjoint(values[index], psfs[index]),
+                rtol=2e-5,
+                atol=2e-5,
+            )
+            np.testing.assert_allclose(
+                psf_back[index],
+                single.psf_adjoint(values[index], images[index]),
+                rtol=2e-5,
+                atol=2e-5,
+            )
+
+    def test_batched_blind_rl_matches_single_tile_results(self):
+        image = np.zeros((9, 17, 17), dtype=np.float32)
+        image[4, 5, 6] = 3.0
+        image[4, 11, 12] = 2.0
+        true_psf = np.zeros((3, 5, 5), dtype=np.float32)
+        true_psf[1, 2, 2] = 0.7
+        true_psf[1, 2, 3] = 0.2
+        true_psf[2, 2, 2] = 0.1
+        observed_a = fftconvolve(image, true_psf, mode="same").astype(np.float32)
+        observed_b = np.roll(observed_a, 1, axis=2)
+        seed = np.ones_like(true_psf) / true_psf.size
+
+        batched = blind_rl.estimate_blind_psf_batch(
+            np.stack([observed_a, observed_b], axis=0),
+            seed,
+            3,
+            xp=np,
+            latent_update_period=2,
+        )
+        expected = np.stack(
+            [
+                blind_rl.estimate_blind_psf(
+                    observed,
+                    seed,
+                    3,
+                    xp=np,
+                    fftconvolve=fftconvolve,
+                    latent_update_period=2,
+                    fft_engine="auto",
+                )
+                for observed in (observed_a, observed_b)
+            ],
+            axis=0,
+        )
+
+        self.assertEqual(batched.shape, (2,) + seed.shape)
+        np.testing.assert_allclose(
+            batched.sum(axis=(1, 2, 3)),
+            np.ones(2, dtype=np.float32),
+            rtol=1e-6,
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(batched, expected, rtol=5e-4, atol=5e-4)
+
+    def test_shared_blind_rl_matches_single_tile_for_identical_observations(self):
+        image = np.zeros((9, 17, 17), dtype=np.float32)
+        image[4, 5, 6] = 3.0
+        image[4, 11, 12] = 2.0
+        true_psf = np.zeros((3, 5, 5), dtype=np.float32)
+        true_psf[1, 2, 2] = 0.7
+        true_psf[1, 2, 3] = 0.2
+        true_psf[2, 2, 2] = 0.1
+        observed = fftconvolve(image, true_psf, mode="same").astype(np.float32)
+        seed = np.ones_like(true_psf) / true_psf.size
+
+        shared = blind_rl.estimate_shared_blind_psf_batch(
+            np.stack([observed, observed], axis=0),
+            seed,
+            3,
+            xp=np,
+            latent_update_period=2,
+        )
+        single = blind_rl.estimate_blind_psf(
+            observed,
+            seed,
+            3,
+            xp=np,
+            fftconvolve=fftconvolve,
+            latent_update_period=2,
+            fft_engine="auto",
+        )
+
+        self.assertEqual(shared.shape, seed.shape)
+        self.assertTrue(np.isfinite(shared).all())
+        self.assertGreaterEqual(float(np.min(shared)), 0.0)
+        self.assertTrue(np.isclose(np.sum(shared, dtype=np.float64), 1.0, atol=1e-6))
+        np.testing.assert_allclose(shared, single, rtol=5e-4, atol=5e-4)
+
+    def test_shared_blind_rl_microbatches_match_full_batch_update(self):
+        rng = np.random.default_rng(29)
+        observed = rng.random((3, 7, 11, 13), dtype=np.float32)
+        seed = rng.random((3, 5, 5), dtype=np.float32)
+        seed /= seed.sum(dtype=np.float64)
+
+        full_batch = blind_rl.estimate_shared_blind_psf_batch(
+            observed,
+            seed,
+            3,
+            xp=np,
+            latent_update_period=2,
+        )
+        microbatched = blind_rl.estimate_shared_blind_psf_batch(
+            observed,
+            seed,
+            3,
+            xp=np,
+            latent_update_period=2,
+            fft_batch_size=1,
+        )
+
+        self.assertEqual(microbatched.shape, seed.shape)
+        self.assertTrue(np.isclose(np.sum(microbatched, dtype=np.float64), 1.0, atol=1e-6))
+        np.testing.assert_allclose(microbatched, full_batch, rtol=5e-4, atol=5e-4)
+
+    def test_streamed_shared_blind_rl_matches_full_batch_update(self):
+        rng = np.random.default_rng(31)
+        observed = rng.random((3, 7, 11, 13), dtype=np.float32)
+        seed = rng.random((3, 5, 5), dtype=np.float32)
+        seed /= seed.sum(dtype=np.float64)
+
+        full_batch = blind_rl.estimate_shared_blind_psf_batch(
+            observed,
+            seed,
+            3,
+            xp=np,
+            latent_update_period=2,
+        )
+        streamed = blind_rl._estimate_shared_blind_psf_streamed_cupy(
+            _fake_numpy_cupy_module(),
+            observed,
+            seed,
+            3,
+            latent_update_period=2,
+            fft_batch_size=1,
+        )
+
+        self.assertEqual(streamed.shape, seed.shape)
+        self.assertTrue(np.isclose(np.sum(streamed, dtype=np.float64), 1.0, atol=1e-6))
+        np.testing.assert_allclose(streamed, full_batch, rtol=5e-4, atol=5e-4)
+
+    def test_shared_cupy_array_wrapper_defaults_to_serial_microbatches(self):
+        fake_cp = _fake_numpy_cupy_module()
+        observed = np.ones((3, 3, 5, 5), dtype=np.float32)
+        seed = np.ones((3, 3, 3), dtype=np.float32) / 27.0
+
+        with (
+            mock.patch.dict(sys.modules, {"cupy": fake_cp}),
+            mock.patch.object(
+                blind_rl,
+                "_estimate_shared_blind_psf_streamed_cupy",
+                return_value=seed,
+            ) as streamed,
+            mock.patch.object(
+                blind_rl,
+                "estimate_shared_blind_psf_batch",
+                side_effect=AssertionError("default shared path should be serial"),
+            ),
+        ):
+            result = blind_rl.estimate_shared_psf_array_cupy(
+                observed,
+                seed,
+                2,
+                pad_z=0,
+            )
+
+        np.testing.assert_allclose(result, seed)
+        streamed.assert_called_once()
+        self.assertEqual(streamed.call_args.kwargs["fft_batch_size"], 1)
+
+    def test_specialized_fft_engine_preserves_blind_rl_result_constraints(self):
+        image = np.zeros((9, 17, 17), dtype=np.float32)
+        image[4, 5, 6] = 3.0
+        image[4, 11, 12] = 2.0
+        true_psf = np.zeros((3, 5, 5), dtype=np.float32)
+        true_psf[1, 2, 2] = 0.7
+        true_psf[1, 2, 3] = 0.2
+        true_psf[2, 2, 2] = 0.1
+        observed = fftconvolve(image, true_psf, mode="same")
+        seed = np.ones_like(true_psf) / true_psf.size
+
+        generic = blind_rl.estimate_blind_psf(
+            observed,
+            seed,
+            3,
+            xp=np,
+            fftconvolve=fftconvolve,
+            latent_update_period=2,
+        )
+        specialized = blind_rl.estimate_blind_psf(
+            observed,
+            seed,
+            3,
+            xp=np,
+            fftconvolve=fftconvolve,
+            latent_update_period=2,
+            fft_engine="auto",
+        )
+
+        self.assertEqual(specialized.shape, seed.shape)
+        self.assertTrue(np.isfinite(specialized).all())
+        self.assertGreaterEqual(float(np.min(specialized)), 0.0)
+        self.assertTrue(
+            np.isclose(np.sum(specialized, dtype=np.float64), 1.0, atol=1e-6)
+        )
+        np.testing.assert_allclose(specialized, generic, rtol=4e-4, atol=4e-4)
+
+    def test_cupy_wrapper_can_select_reference_fftconvolve_engine(self):
+        fake_cp = types.ModuleType("cupy")
+        fake_fftconvolve = object()
+        fake_cupyx = types.ModuleType("cupyx")
+        fake_scipy = types.ModuleType("cupyx.scipy")
+        fake_signal = types.ModuleType("cupyx.scipy.signal")
+        fake_signal.fftconvolve = fake_fftconvolve
+
+        with (
+            mock.patch.dict(
+                sys.modules,
+                {
+                    "cupy": fake_cp,
+                    "cupyx": fake_cupyx,
+                    "cupyx.scipy": fake_scipy,
+                    "cupyx.scipy.signal": fake_signal,
+                },
+            ),
+            mock.patch.object(blind_rl, "estimate_blind_psf") as estimate,
+        ):
+            estimate.return_value = "psf"
+            result = blind_rl.estimate_blind_psf_cupy(
+                "observed",
+                "seed",
+                2,
+                fft_engine="cupyx",
+            )
+
+        self.assertEqual(result, "psf")
+        estimate.assert_called_once()
+        self.assertIsNone(estimate.call_args.kwargs["fft_engine"])
 
     def test_blind_rl_preserves_psf_constraints(self):
         image = np.zeros((9, 17, 17), dtype=np.float32)

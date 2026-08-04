@@ -77,6 +77,7 @@ tiresias-estimate-psf \
   --chunk-xy 256 \
   --blind-max-tiles 16 \
   --blind-z-slices 128 \
+  --cupy-fft-engine scout \
   --pad-xy 32 \
   --pad-z 20 \
   --latent-update-period 2 \
@@ -91,6 +92,9 @@ Common PSF-estimation options:
 | `--chunk-xy` | `256` | Requested XY core tile size. Tiresias may reduce it to fit VRAM. |
 | `--blind-max-tiles` | `16` | Maximum representative high-SNR tiles. Use `0` for the full grid. |
 | `--blind-z-slices` | `128` | Maximum Z planes used for blind estimation. Use `0` for full Z. |
+| `--cupy-fft-engine` | `scout` | `scout` runs a short pass over selected tiles, keeps the most self-consistent PSFs, then finishes with CuPy. Use `cupyx` to run every selected tile for the full iteration count. |
+| `--adaptive-scout-iters` | `2` | Number of short scout iterations used by `--cupy-fft-engine scout`. |
+| `--adaptive-keep-tiles` | `4` | Number of scout-approved tiles to finish. |
 | `--pad-xy` | `32` | XY halo around each tile. |
 | `--pad-z` | `20` | Symmetric Z padding inside each CuPy blind-RL tile. |
 | `--latent-update-period` | `2` | Update the latent image every N iterations. Use `1` for full alternating updates. |
@@ -218,6 +222,17 @@ result.
 - `--blind-max-tiles 16` is usually much faster than processing the whole grid.
   Use `--blind-max-tiles 0` for comparison or reproducibility studies where
   full-grid coverage is required.
+- `--cupy-fft-engine scout` is the default speed-oriented mode. It is most useful
+  when high-SNR tile selection may include contaminated, saturated, edge-heavy,
+  or otherwise unrepresentative regions; the scout pass filters tiles by PSF
+  shape agreement before spending the remaining iterations.
+- `--cupy-fft-engine cupyx` is the direct full-iteration path. Use it when you
+  want every selected tile to contribute, or when a dataset may contain real
+  spatial PSF variation that the scout filter could treat as disagreement.
+- Lowering `--blind-max-tiles` below `16` can increase speed significantly
+  because fewer CuPy blind-RL tiles are run. Treat it as an explicit throughput
+  knob: validate against `16` tiles, MATLAB, or a known-good reference before
+  using lower values as a production default.
 - The cache key includes image metadata, seed content, tile sizing, selected Z
   window, iteration count, and tile-selection settings.
 
