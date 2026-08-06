@@ -9,7 +9,7 @@ from typing import Sequence
 from tifffile import imread, imwrite
 
 from .blind_rl import deconvolve_with_cucim
-from .seeds import generate_theoretical_psf, resolve_dxy
+from .seeds import generate_theoretical_psf, load_psf_seed, resolve_dxy
 from .tiling import (
     DEFAULT_ADAPTIVE_KEEP_TILES,
     DEFAULT_ADAPTIVE_SCOUT_ITERS,
@@ -33,9 +33,9 @@ def _add_optical_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--na", type=float, default=None)
     parser.add_argument("--detection-na", dest="detection_na", type=float, default=None)
     parser.add_argument("--illumination-na", dest="illumination_na", type=float, default=None)
-    parser.add_argument("--wavelength", type=float, required=True)
-    parser.add_argument("--ni", type=float, required=True)
-    parser.add_argument("--ns", type=float, required=True)
+    parser.add_argument("--wavelength", type=float, default=None)
+    parser.add_argument("--ni", type=float, default=None)
+    parser.add_argument("--ns", type=float, default=None)
     parser.add_argument("--ni0", type=float, default=None)
     parser.add_argument("--tg", type=float, default=None)
     parser.add_argument("--tg0", type=float, default=None)
@@ -51,7 +51,7 @@ def _add_optical_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--camera-pixel-size", dest="camera_pixel_size", type=float, default=None)
     parser.add_argument("--magnification", type=float, default=None)
     parser.add_argument("--dxy", type=float, default=None)
-    parser.add_argument("--dz", type=float, required=True)
+    parser.add_argument("--dz", type=float, default=None)
     parser.add_argument("--psf-size-z", dest="psf_size_z", type=int, default=61)
     parser.add_argument("--psf-size-xy", dest="psf_size_xy", type=int, default=128)
     parser.add_argument("--background", type=float, default=0.0)
@@ -61,6 +61,12 @@ def build_estimate_psf_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Estimate a blind PSF from a TIFF volume.")
     parser.add_argument("--image-path", type=Path, required=True)
     parser.add_argument("--output-path", type=Path, required=True)
+    parser.add_argument(
+        "--psf-seed-path",
+        type=Path,
+        default=None,
+        help="Calibrated TIFF PSF seed; bypasses theoretical seed generation.",
+    )
     parser.add_argument("--n-iters", dest="n_iters", type=int, default=10)
     parser.add_argument("--chunk-xy", dest="chunk_xy", type=int, default=DEFAULT_BLIND_CHUNK_XY)
     parser.add_argument("--blind-max-tiles", dest="blind_max_tiles", type=int, default=DEFAULT_BLIND_MAX_TILES)
@@ -117,28 +123,32 @@ def build_estimate_psf_parser() -> argparse.ArgumentParser:
 
 def estimate_psf_main(argv: Sequence[str] | None = None) -> None:
     args = build_estimate_psf_parser().parse_args(argv)
-    dxy = resolve_dxy(args.dxy, args.camera_pixel_size, args.magnification)
-    psf_seed = generate_theoretical_psf(
-        na=args.na,
-        detection_na=args.detection_na,
-        illumination_na=args.illumination_na,
-        wavelength=args.wavelength,
-        ni=args.ni,
-        ns=args.ns,
-        ni0=args.ni0,
-        tg=args.tg,
-        tg0=args.tg0,
-        ng=args.ng,
-        ng0=args.ng0,
-        ti0=args.ti0,
-        oversample_factor=args.oversample_factor,
-        psf_model=args.psf_model,
-        dxy=dxy,
-        dz=args.dz,
-        psf_size_z=args.psf_size_z,
-        psf_size_xy=args.psf_size_xy,
-        background=args.background,
-    )
+    psf_shape = (args.psf_size_z, args.psf_size_xy, args.psf_size_xy)
+    if args.psf_seed_path is not None:
+        psf_seed = load_psf_seed(args.psf_seed_path, psf_shape)
+    else:
+        dxy = resolve_dxy(args.dxy, args.camera_pixel_size, args.magnification)
+        psf_seed = generate_theoretical_psf(
+            na=args.na,
+            detection_na=args.detection_na,
+            illumination_na=args.illumination_na,
+            wavelength=args.wavelength,
+            ni=args.ni,
+            ns=args.ns,
+            ni0=args.ni0,
+            tg=args.tg,
+            tg0=args.tg0,
+            ng=args.ng,
+            ng0=args.ng0,
+            ti0=args.ti0,
+            oversample_factor=args.oversample_factor,
+            psf_model=args.psf_model,
+            dxy=dxy,
+            dz=args.dz,
+            psf_size_z=args.psf_size_z,
+            psf_size_xy=args.psf_size_xy,
+            background=args.background,
+        )
     estimated = estimate_psf_from_chunks(
         image_path=args.image_path,
         psf_seed=psf_seed,

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 import numpy as np
 import psfmodels as pm
 from scipy.ndimage import rotate
+from tifffile import imread
 
 RIGHT_ANGLE_TOLERANCE = 1e-6
 
@@ -129,6 +131,24 @@ def _center_crop_or_pad(volume: np.ndarray, shape: tuple[int, int, int]) -> np.n
         dest_slices.append(slice(dest_start, dest_start + length))
     output[tuple(dest_slices)] = volume[tuple(source_slices)]
     return output
+
+
+def load_psf_seed(path: str | Path, shape: tuple[int, int, int]) -> np.ndarray:
+    """Load a calibrated TIFF PSF and fit it to the configured support."""
+    source = np.asarray(imread(path), dtype=np.float32)
+    if source.ndim == 2:
+        source = source[np.newaxis, :, :]
+    if source.ndim != 3:
+        raise ValueError(
+            f"External PSF seed must be 3-D, got shape {source.shape} from {path}"
+        )
+    target_shape = tuple(int(axis) for axis in shape)
+    if len(target_shape) != 3 or any(axis <= 0 for axis in target_shape):
+        raise ValueError(f"External PSF target shape must be positive 3-D: {shape}")
+    fitted = _center_crop_or_pad(source, target_shape)
+    if not np.any(np.isfinite(fitted) & (fitted > 0)):
+        raise ValueError(f"External PSF seed has no positive finite energy: {path}")
+    return normalise_psf(fitted)
 
 
 def rotate_illumination_psf(illumination: np.ndarray, angle: float) -> np.ndarray:

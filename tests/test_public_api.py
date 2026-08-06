@@ -12,6 +12,7 @@ class PublicApiTests(unittest.TestCase):
             "deconvolve_with_cucim",
             "generate_theoretical_psf",
             "generate_psf_seed",
+            "load_psf_seed",
             "estimate_psf_from_chunks",
         ]:
             self.assertTrue(hasattr(tiresias, name), name)

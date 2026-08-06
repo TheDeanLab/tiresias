@@ -135,7 +135,7 @@ python -m pip install -e ".[dev]"
 The package exposes two command-line entrypoints:
 
 ```text
-tiresias-estimate-psf   --image-path IMAGE --output-path PSF --wavelength ... --ni ... --ns ... --dz ...
+tiresias-estimate-psf   --image-path IMAGE --output-path PSF [--psf-seed-path CALIBRATED_PSF] [optics ...]
 tiresias-deconvolve     --image-path IMAGE --psf-path PSF --output-path RESTORED [--n-iters N] [--device-id D]
 ```
 
@@ -176,7 +176,10 @@ Core options:
 
 Optics and seed options:
 
-- `--wavelength` (required), `--dz` (required), `--ni` (required), `--ns` (required).
+- `--psf-seed-path`: calibrated TIFF seed, center-fitted and normalized to the
+  configured `--psf-size-z` and `--psf-size-xy`.
+- `--wavelength`, `--dz`, `--ni`, and `--ns` are required when a
+  theoretical seed is generated; they are not needed with `--psf-seed-path`.
 - `--na`, `--detection-na`, `--illumination-na`.
 - `--camera-pixel-size` and `--magnification` can replace `--dxy`.
 - `--psf-size-z`, `--psf-size-xy`, `--psf-model`, `--background`.

@@ -8,6 +8,37 @@ import numpy as np
 
 
 class CliTests(unittest.TestCase):
+    def test_estimate_psf_cli_loads_calibrated_seed_without_optical_arguments(self):
+        from tiresias import cli
+
+        seed = np.ones((5, 7, 7), dtype=np.float32)
+        seed /= seed.sum()
+
+        with (
+            mock.patch.object(cli, "load_psf_seed", return_value=seed) as load_seed,
+            mock.patch.object(cli, "generate_theoretical_psf") as generate,
+            mock.patch.object(cli, "estimate_psf_from_chunks", return_value=seed) as estimate,
+            mock.patch.object(cli, "imwrite"),
+        ):
+            cli.estimate_psf_main(
+                [
+                    "--image-path",
+                    "volume.tif",
+                    "--output-path",
+                    "estimated_psf.tif",
+                    "--psf-seed-path",
+                    "calibrated_psf.tif",
+                    "--psf-size-z",
+                    "5",
+                    "--psf-size-xy",
+                    "7",
+                ]
+            )
+
+        load_seed.assert_called_once_with(Path("calibrated_psf.tif"), (5, 7, 7))
+        generate.assert_not_called()
+        self.assertIs(estimate.call_args.kwargs["psf_seed"], seed)
+
     def test_estimate_psf_cli_generates_seed_and_writes_estimated_psf(self):
         from tiresias import cli
 

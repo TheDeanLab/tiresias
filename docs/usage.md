@@ -61,6 +61,18 @@ tiresias-estimate-psf \
   --ns 1.33
 ```
 
+To continue estimation from a calibrated or previously estimated PSF, use a
+TIFF seed. Optical-model arguments are not required in this mode:
+
+```bash
+tiresias-estimate-psf \
+  --image-path volume.tif \
+  --output-path estimated_psf.tif \
+  --psf-seed-path calibrated_psf.tif \
+  --psf-size-z 61 \
+  --psf-size-xy 128
+```
+
 Useful tuning flags:
 
 ```bash
@@ -88,6 +100,7 @@ Common PSF-estimation options:
 
 | Option | Default | Meaning |
 | --- | ---: | --- |
+| `--psf-seed-path` | none | Calibrated TIFF seed. Tiresias center-crops or pads it to the configured PSF support and normalizes its energy. |
 | `--n-iters` | `10` | Blind Richardson-Lucy iterations per tile. |
 | `--chunk-xy` | `256` | Requested XY core tile size. Tiresias may reduce it to fit VRAM. |
 | `--blind-max-tiles` | `16` | Maximum representative high-SNR tiles. Use `0` for the full grid. |
@@ -104,6 +117,9 @@ Common PSF-estimation options:
 | `--no-psf-cache` | off | Force recomputation. |
 
 The output PSF is a float32 TIFF normalized to sum to one.
+Without `--psf-seed-path`, theoretical seed generation requires
+`--wavelength`, `--dz`, `--ni`, `--ns`, and either `--dxy` or the
+camera-pixel-size/magnification pair.
 
 ## Deconvolve a TIFF Volume
 

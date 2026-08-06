@@ -793,7 +793,7 @@ def _run_blind_tile_adaptive_cupyx_pass(
 
     final_estimates, final_weights = _run_blind_tile_batch_pass(
         volume,
-        psf_seed,
+        scout_seed,
         kept_origins,
         pad_xy=pad_xy,
         pad_z=pad_z,

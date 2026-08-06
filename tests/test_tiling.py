@@ -293,6 +293,12 @@ class TilingTests(unittest.TestCase):
         self.assertEqual(scout_call.kwargs["single_tile_engine"], "cupyx")
         self.assertEqual(scout_call.kwargs["initial_batch_size"], 1)
         self.assertEqual(final_call.args[2], [(0, 0, 8, 8), (8, 0, 16, 8)])
+        expected_scout_seed = tiling.merge_weighted_psfs(
+            [scout_a, scout_c], [1.0, 1.0], 100.0
+        )
+        np.testing.assert_allclose(
+            final_call.args[1], expected_scout_seed, rtol=1e-6, atol=1e-8
+        )
         self.assertEqual(final_call.kwargs["n_iters"], 8)
         self.assertEqual(final_call.kwargs["single_tile_engine"], "cupyx")
         self.assertEqual(final_call.kwargs["initial_batch_size"], 1)
