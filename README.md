@@ -7,7 +7,7 @@
 </p>
 
 Tiresias is an open source Python package for blind point-spread-function (PSF)
-estimation and cuCIM Richardson-Lucy deconvolution from 3-D TIFF image
+estimation and CuPy Richardson-Lucy deconvolution from 3-D TIFF image
 volumes.
 
 ## Package Scope
@@ -24,7 +24,7 @@ The package intentionally excludes:
 Production users should use:
 
 - `tiresias-estimate-psf` for GPU blind PSF estimation.
-- `tiresias-deconvolve` for cuCIM-based Richardson-Lucy restoration.
+- `tiresias-deconvolve` for CuPy-based Richardson-Lucy restoration.
 
 ## Current Functionality
 
@@ -35,14 +35,14 @@ Production users should use:
 - Optional deterministic merge caching for repeated PSF estimation runs.
 - SNR-weighted selection of representative XY tiles.
 - Optional prefetch controls for overlapping CPU preparation.
-- cuCIM-backed Richardson-Lucy restoration (`cucim.skimage.restoration.richardson_lucy`).
+- CuPy FFT Richardson-Lucy restoration.
 - A SciPy backend implementation retained as a numerical reference and for
   validation.
 - CLI entrypoints in `project.scripts`:
   - `tiresias-estimate-psf`
   - `tiresias-deconvolve`
 - Python API for direct integration (`generate_theoretical_psf`, `estimate_psf_from_chunks`,
-  `deconvolve_with_cucim`, etc.).
+  `deconvolve_with_cupy`, etc.).
 - Built-in CuPy cache cleanup helpers to stabilize long-running GPU jobs.
 
 ## Requirements
@@ -58,12 +58,10 @@ Production users should use:
   - `tifffile`
   - `psfmodels`
   - `cupy-cuda11x`
-  - `cucim`
 
 The production path can fail quickly when:
 
 - CuPy/CUDA and the installed NVIDIA driver are incompatible.
-- cuCIM is missing in the active Python environment.
 - The input image is not a 3-D volume.
 
 ## Installation
@@ -199,7 +197,7 @@ tiresias-deconvolve \
 ```
 
 - `--n-iters`: RL restoration iterations (default `20`).
-- `--device-id`: CUDA device index for cuCIM (default `0`).
+- `--device-id`: CUDA device index for CuPy restoration (default `0`).
 
 ## Python API
 
@@ -210,7 +208,7 @@ from tifffile import imread, imwrite
 from tiresias import (
     generate_psf_seed,
     estimate_psf_from_chunks,
-    deconvolve_with_cucim,
+    deconvolve_with_cupy,
 )
 
 seed = generate_psf_seed(
@@ -251,7 +249,7 @@ psf = estimate_psf_from_chunks(
 imwrite("estimated_psf.tif", psf)
 
 image = imread("volume.tif")
-restored = deconvolve_with_cucim(image, psf, n_iters=20, device_id=0)
+restored = deconvolve_with_cupy(image, psf, n_iters=20, device_id=0)
 imwrite("restored.tif", restored)
 ```
 
@@ -281,7 +279,7 @@ trimmed = trim_cupy_memory_pool(8 * 1024**3, device_id=0)
   settings.
 - Tile weighting uses SNR statistics and weight capping to avoid outlier chunk
   domination.
-- Restored TIFF outputs are written as `float32`.
+- Restored TIFF outputs are written as `uint16`.
 
 ## Output Layout
 
@@ -289,7 +287,7 @@ Tiresias writes TIFF outputs by default:
 
 - Blind PSF outputs are written to the `--output-path` argument as a normalized
   `float32` TIFF.
-- Restored volumes are written to the `--output-path` argument as a `float32`
+- Restored volumes are written to the `--output-path` argument as a `uint16`
   TIFF.
 - Cached merged PSFs are stored under `.psf_cache` beside the input volume unless
   `--cache-dir` is provided.
@@ -306,9 +304,9 @@ This usually means a host CUDA driver/runtime mismatch. Confirm with
 Install Tiresias in an environment that includes `cupy-cuda11x` for the same
 Python and CUDA runtime.
 
-`Restoration requires both cupy and cucim`
+`Restoration requires cupy`
 
-Install cuCIM into the exact runtime that executes `tiresias-deconvolve`.
+Install CuPy into the exact runtime that executes `tiresias-deconvolve`.
 
 `Observed image has no positive finite signal`
 

@@ -1,10 +1,10 @@
-"""CuPy/SciPy blind PSF estimation and cuCIM restoration."""
+"""CuPy/SciPy blind PSF estimation and CuPy restoration."""
 
 from __future__ import annotations
 
 from .blind_rl import (
     clear_cupy_memory,
-    deconvolve_with_cucim,
+    deconvolve_with_cupy,
     estimate_blind_psf,
     estimate_blind_psf_cupy,
     estimate_blind_psf_scipy,
@@ -21,7 +21,7 @@ from .tiling import estimate_psf_from_chunks, open_tiff_memmap, resolve_cupy_bli
 
 __all__ = [
     "clear_cupy_memory",
-    "deconvolve_with_cucim",
+    "deconvolve_with_cupy",
     "estimate_blind_psf",
     "estimate_blind_psf_scipy",
     "estimate_blind_psf_cupy",

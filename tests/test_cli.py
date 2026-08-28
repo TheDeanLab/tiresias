@@ -129,7 +129,7 @@ class CliTests(unittest.TestCase):
 
         with (
             mock.patch.object(cli, "imread", side_effect=[image, psf]) as imread,
-            mock.patch.object(cli, "deconvolve_with_cucim", return_value=restored) as deconvolve,
+            mock.patch.object(cli, "deconvolve_with_cupy", return_value=restored) as deconvolve,
             mock.patch.object(cli, "imwrite") as imwrite,
         ):
             cli.deconvolve_main(

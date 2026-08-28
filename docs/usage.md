@@ -1,7 +1,7 @@
 # Tiresias Usage Guide
 
 Tiresias estimates a blind point-spread function (PSF) from a 3-D TIFF volume
-with CuPy, then can use that PSF for cuCIM Richardson-Lucy restoration.
+with CuPy, then can use that PSF for CuPy Richardson-Lucy restoration.
 
 The production path requires a CUDA-capable GPU. The SciPy implementation is
 included as a numerical reference and for tests, not as the intended production
@@ -21,10 +21,8 @@ Verify the GPU stack:
 ```bash
 python - <<'PY'
 import cupy
-import cucim
 
 print("cupy", cupy.__version__)
-print("cucim", cucim.__version__)
 print("gpu_count", cupy.cuda.runtime.getDeviceCount())
 PY
 ```
@@ -133,8 +131,7 @@ tiresias-deconvolve \
 ```
 
 The deconvolution command loads the image and PSF from TIFF, runs
-`cucim.skimage.restoration.richardson_lucy` with `clip=False`, and writes a
-float32 TIFF.
+accelerated CuPy FFT Richardson-Lucy restoration, and writes a uint16 TIFF.
 
 ## Python API
 
@@ -169,16 +166,16 @@ psf = estimate_psf_from_chunks(
 imwrite("estimated_psf.tif", psf)
 ```
 
-Run cuCIM deconvolution:
+Run CuPy deconvolution:
 
 ```python
 from tifffile import imread, imwrite
 
-from tiresias import deconvolve_with_cucim
+from tiresias import deconvolve_with_cupy
 
 image = imread("volume.tif")
 psf = imread("estimated_psf.tif")
-restored = deconvolve_with_cucim(image, psf, n_iters=20, device_id=0)
+restored = deconvolve_with_cupy(image, psf, n_iters=20, device_id=0)
 imwrite("restored.tif", restored)
 ```
 
@@ -265,9 +262,9 @@ verification snippet above to confirm driver/runtime compatibility.
 Install Tiresias in an environment that includes the required CuPy wheel. The
 default package metadata installs `cupy-cuda11x`.
 
-`Restoration requires both cupy and cucim`
+`Restoration requires cupy`
 
-Install cuCIM in the same Python environment used to run `tiresias-deconvolve`.
+Install CuPy in the same Python environment used to run `tiresias-deconvolve`.
 
 `Observed image has no positive finite signal`
 

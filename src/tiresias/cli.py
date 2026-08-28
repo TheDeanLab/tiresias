@@ -8,7 +8,7 @@ from typing import Sequence
 
 from tifffile import imread, imwrite
 
-from .blind_rl import deconvolve_with_cucim
+from .blind_rl import deconvolve_with_cupy
 from .seeds import generate_theoretical_psf, load_psf_seed, resolve_dxy
 from .tiling import (
     DEFAULT_ADAPTIVE_KEEP_TILES,
@@ -178,7 +178,9 @@ def estimate_psf_main(argv: Sequence[str] | None = None) -> None:
 
 
 def build_deconvolve_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run cuCIM Richardson-Lucy restoration on a TIFF volume.")
+    parser = argparse.ArgumentParser(
+        description="Run CuPy Richardson-Lucy restoration on a TIFF volume."
+    )
     parser.add_argument("--image-path", type=Path, required=True)
     parser.add_argument("--psf-path", type=Path, required=True)
     parser.add_argument("--output-path", type=Path, required=True)
@@ -191,7 +193,7 @@ def deconvolve_main(argv: Sequence[str] | None = None) -> None:
     args = build_deconvolve_parser().parse_args(argv)
     image = imread(args.image_path)
     psf = imread(args.psf_path)
-    restored = deconvolve_with_cucim(
+    restored = deconvolve_with_cupy(
         image,
         psf,
         args.n_iters,

@@ -8,5 +8,5 @@ usage
 api
 ```
 
-Tiresias is a CUDA-first package for blind PSF estimation and cuCIM
+Tiresias is a CUDA-first package for blind PSF estimation and CuPy
 Richardson-Lucy restoration from 3-D microscopy data.

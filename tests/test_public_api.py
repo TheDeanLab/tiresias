@@ -9,13 +9,14 @@ class PublicApiTests(unittest.TestCase):
             "estimate_blind_psf_scipy",
             "estimate_blind_psf_cupy",
             "estimate_psf_array_cupy",
-            "deconvolve_with_cucim",
+            "deconvolve_with_cupy",
             "generate_theoretical_psf",
             "generate_psf_seed",
             "load_psf_seed",
             "estimate_psf_from_chunks",
         ]:
             self.assertTrue(hasattr(tiresias, name), name)
+        self.assertFalse(hasattr(tiresias, "deconvolve_with_cucim"))
 
 
 if __name__ == "__main__":

@@ -12,63 +12,6 @@ from scipy.signal import fftconvolve
 from tiresias import blind_rl
 
 
-class _FakeGpuArray:
-    def __init__(self, values):
-        self.values = np.asarray(values, dtype=np.float32)
-
-    def max(self):
-        return self.values.max()
-
-
-def _fake_gpu_modules(events, richardson_lucy):
-    class Device:
-        def __init__(self, device_id):
-            self.device_id = device_id
-
-        def __enter__(self):
-            events.append(("device_enter", self.device_id))
-            return self
-
-        def __exit__(self, exc_type, exc_value, traceback):
-            events.append(("device_exit", self.device_id))
-
-    class PlanCache:
-        def clear(self):
-            events.append("plan_clear")
-
-    class MemoryPool:
-        def free_all_blocks(self):
-            events.append("pool_free")
-
-    fake_cp = types.ModuleType("cupy")
-    fake_cp.float32 = np.float32
-    fake_cp.asarray = lambda values, dtype=None: _FakeGpuArray(values)
-    fake_cp.asnumpy = lambda values: values.values.copy()
-    fake_cp.cuda = types.SimpleNamespace(
-        Device=Device,
-        Stream=types.SimpleNamespace(
-            null=types.SimpleNamespace(
-                synchronize=lambda: events.append("synchronize")
-            )
-        ),
-    )
-    fake_cp.fft = types.SimpleNamespace(
-        config=types.SimpleNamespace(get_plan_cache=lambda: PlanCache())
-    )
-    fake_cp.get_default_memory_pool = lambda: MemoryPool()
-
-    fake_cucim = types.ModuleType("cucim")
-    fake_skimage = types.ModuleType("cucim.skimage")
-    fake_restoration = types.ModuleType("cucim.skimage.restoration")
-    fake_restoration.richardson_lucy = richardson_lucy
-    return {
-        "cupy": fake_cp,
-        "cucim": fake_cucim,
-        "cucim.skimage": fake_skimage,
-        "cucim.skimage.restoration": fake_restoration,
-    }
-
-
 def _fake_numpy_cupy_module():
     class Device:
         def __init__(self, device_id):
@@ -503,47 +446,118 @@ class BlindRlTests(unittest.TestCase):
         self.assertEqual(ratio[2], 1.0)
         self.assertNotEqual(ratio[1], 1.0)
 
-    def test_cucim_cleanup_releases_fft_plans_and_memory_pool_after_success(self):
-        events = []
+    def test_cupy_deconvolution_returns_uint16_host_array(self):
+        synchronized = []
 
-        def richardson_lucy(image, psf, **kwargs):
-            return _FakeGpuArray(np.full((2, 2, 2), 7, dtype=np.float32))
+        class FakeDevice:
+            def __init__(self, device_id):
+                self.device_id = device_id
 
-        with (
-            mock.patch.dict(sys.modules, _fake_gpu_modules(events, richardson_lucy)),
-            mock.patch.object(blind_rl, "_normalise_psf", side_effect=lambda psf, xp, epsilon: psf),
-        ):
-            restored = blind_rl.deconvolve_with_cucim(
-                np.ones((2, 2, 2), dtype=np.float32),
+            def __enter__(self):
+                synchronized.append(("device", self.device_id))
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+        fake_cp = types.SimpleNamespace(
+            asarray=np.asarray,
+            asnumpy=np.asarray,
+            clip=np.clip,
+            conj=np.conj,
+            fft=np.fft,
+            floor=np.floor,
+            float32=np.float32,
+            float64=np.float64,
+            isfinite=np.isfinite,
+            maximum=np.maximum,
+            roll=np.roll,
+            sum=np.sum,
+            uint16=np.uint16,
+            zeros=np.zeros,
+            zeros_like=np.zeros_like,
+            cuda=types.SimpleNamespace(
+                Device=FakeDevice,
+                Stream=types.SimpleNamespace(
+                    null=types.SimpleNamespace(
+                        synchronize=lambda: synchronized.append("synchronize")
+                    )
+                ),
+            ),
+        )
+
+        with mock.patch.dict(sys.modules, {"cupy": fake_cp}):
+            restored = blind_rl.deconvolve_with_cupy(
+                np.array([[[1.4, 1.5, 2.5]]], dtype=np.float32),
                 np.ones((1, 1, 1), dtype=np.float32),
-                2,
+                0,
+                device_id=2,
             )
 
-        self.assertTrue(np.all(restored == 7))
-        self.assertIn("plan_clear", events)
-        self.assertIn("pool_free", events)
-        self.assertLess(events.index("plan_clear"), events.index("pool_free"))
+        np.testing.assert_array_equal(restored, np.array([[[1, 2, 3]]], dtype=np.uint16))
+        self.assertEqual(restored.dtype, np.uint16)
+        self.assertEqual(synchronized, [("device", 2), "synchronize"])
 
-    def test_cucim_cleanup_releases_fft_plans_and_memory_pool_after_error(self):
-        events = []
+    def test_cupy_deconvolution_releases_fft_plans_and_memory_pools(self):
+        released = []
 
-        def richardson_lucy(image, psf, **kwargs):
-            raise RuntimeError("restoration failed")
+        class FakeDevice:
+            def __init__(self, device_id):
+                self.device_id = device_id
 
-        with (
-            mock.patch.dict(sys.modules, _fake_gpu_modules(events, richardson_lucy)),
-            mock.patch.object(blind_rl, "_normalise_psf", side_effect=lambda psf, xp, epsilon: psf),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "restoration failed"):
-                blind_rl.deconvolve_with_cucim(
-                    np.ones((2, 2, 2), dtype=np.float32),
-                    np.ones((1, 1, 1), dtype=np.float32),
-                    2,
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+        class FakeFft:
+            fftn = staticmethod(np.fft.fftn)
+            ifftn = staticmethod(np.fft.ifftn)
+            config = types.SimpleNamespace(
+                get_plan_cache=lambda: types.SimpleNamespace(
+                    clear=lambda: released.append("plan_cache")
                 )
+            )
 
-        self.assertIn("plan_clear", events)
-        self.assertIn("pool_free", events)
-        self.assertLess(events.index("plan_clear"), events.index("pool_free"))
+        fake_cp = types.SimpleNamespace(
+            asarray=np.asarray,
+            asnumpy=np.asarray,
+            clip=np.clip,
+            conj=np.conj,
+            fft=FakeFft,
+            floor=np.floor,
+            float32=np.float32,
+            float64=np.float64,
+            get_default_memory_pool=lambda: types.SimpleNamespace(
+                free_all_blocks=lambda: released.append("memory_pool")
+            ),
+            get_default_pinned_memory_pool=lambda: types.SimpleNamespace(
+                free_all_blocks=lambda: released.append("pinned_pool")
+            ),
+            isfinite=np.isfinite,
+            maximum=np.maximum,
+            roll=np.roll,
+            sum=np.sum,
+            uint16=np.uint16,
+            zeros=np.zeros,
+            zeros_like=np.zeros_like,
+            cuda=types.SimpleNamespace(
+                Device=FakeDevice,
+                Stream=types.SimpleNamespace(
+                    null=types.SimpleNamespace(synchronize=lambda: None)
+                ),
+            ),
+        )
+
+        with mock.patch.dict(sys.modules, {"cupy": fake_cp}):
+            blind_rl.deconvolve_with_cupy(
+                np.ones((3, 3, 3), dtype=np.uint16),
+                np.ones((1, 1, 1), dtype=np.float32),
+                1,
+            )
+
+        self.assertEqual(released, ["plan_cache", "memory_pool", "pinned_pool"])
 
 
 if __name__ == "__main__":
