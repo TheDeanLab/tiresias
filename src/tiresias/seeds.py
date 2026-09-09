@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import math
 from pathlib import Path
 
 import numpy as np
@@ -169,6 +170,50 @@ def rotate_illumination_psf(illumination: np.ndarray, angle: float) -> np.ndarra
     )
 
 
+def _resolve_slit_axis(light_sheet_angle: float) -> int:
+    """Resolve the pre-rotation gate axis from the light-sheet angle's quadrant."""
+    # D-01: unconditional round-to-nearest-quadrant, deliberately unlike
+    # rotate_illumination_psf's RIGHT_ANGLE_TOLERANCE-gated fast path. Python's
+    # round-half-to-even applies at exact tie angles (e.g. 45.0, 135.0); plan
+    # 01-03 pins that contract with a dedicated test.
+    quadrant = int(round(light_sheet_angle / 90.0)) % 4
+    return 0 if quadrant % 2 == 0 else 2
+
+
+def _resolve_slit_fwhm(slit_width: float | None, dxy: float) -> float:
+    """Resolve the ASLM slit gate's FWHM in physical units."""
+    del dxy  # unused on this path; plan 01-04 widens this to the slit_width_px form
+    if slit_width is None or slit_width <= 0:
+        raise ValueError(f"slit_width must be > 0, got {slit_width!r}")
+    return slit_width
+
+
+def _gaussian_slit_window(size: int, fwhm: float, pixel_size: float) -> np.ndarray | None:
+    """Build a geometric-midpoint-centered Gaussian taper, or None to skip the gate."""
+    full_extent = size * pixel_size
+    if fwhm >= full_extent:
+        return None  # D-06: skip the gate entirely for exact light_sheet reduction
+    sigma_px = (fwhm / pixel_size) / (2.0 * math.sqrt(2.0 * math.log(2.0)))
+    center = (size - 1) / 2.0  # D-05: geometric midpoint, matches psfmodels' centered beam waist
+    idx = np.arange(size, dtype=np.float64)
+    window = np.exp(-0.5 * ((idx - center) / sigma_px) ** 2)
+    return window.astype(np.float32)
+
+
+def _apply_aslm_slit_gate(
+    illumination: np.ndarray, axis: int, fwhm: float, dxy: float, dz: float
+) -> np.ndarray:
+    """Multiply the pre-rotation illumination by a Gaussian slit gate along one axis."""
+    pixel_size = dz if axis == 0 else dxy
+    size = illumination.shape[axis]
+    window = _gaussian_slit_window(size, fwhm, pixel_size)
+    if window is None:
+        return illumination
+    shape = [1, 1, 1]
+    shape[axis] = size
+    return illumination * window.reshape(shape)
+
+
 def generate_psf_seed(
     *,
     psf_mode: str,
@@ -192,8 +237,20 @@ def generate_psf_seed(
     psf_size_xy: int,
     background: float,
     light_sheet_angle: float = 90.0,
+    slit_width: float | None = None,
 ) -> np.ndarray:
-    """Create a single-detection or light-sheet blind-estimation seed PSF."""
+    """Create a single-detection, light-sheet, or ASLM blind-estimation seed PSF."""
+    if psf_mode not in ("single", "light_sheet", "aslm"):
+        raise ValueError(
+            f"Unsupported psf_mode={psf_mode!r}; expected one of 'single', 'light_sheet', 'aslm'"
+        )
+
+    gate_axis: int | None = None
+    slit_fwhm: float | None = None
+    if psf_mode == "aslm":  # D-07: validate before generating any PSF
+        gate_axis = _resolve_slit_axis(light_sheet_angle)
+        slit_fwhm = _resolve_slit_fwhm(slit_width, dxy)
+
     detection = generate_theoretical_psf(
         na=na,
         detection_na=detection_na,
@@ -218,8 +275,6 @@ def generate_psf_seed(
 
     if psf_mode == "single":
         return normalise_psf(detection)
-    if psf_mode != "light_sheet":
-        raise ValueError(f"Unsupported psf_mode={psf_mode!r}")
 
     illumination = generate_theoretical_psf(
         na=na,
@@ -242,5 +297,7 @@ def generate_psf_seed(
         psf_size_xy=psf_size_xy,
         background=background,
     )
+    if psf_mode == "aslm":
+        illumination = _apply_aslm_slit_gate(illumination, gate_axis, slit_fwhm, dxy, dz)
     rotated = rotate_illumination_psf(illumination, light_sheet_angle)
     return normalise_psf(detection * rotated)
