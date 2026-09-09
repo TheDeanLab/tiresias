@@ -230,10 +230,26 @@ def _apply_aslm_slit_gate(
     size = illumination.shape[axis]
     window = _gaussian_slit_window(size, fwhm, pixel_size)
     if window is None:
-        return illumination
-    shape = [1, 1, 1]
-    shape[axis] = size
-    return illumination * window.reshape(shape)
+        gated = illumination
+    else:
+        shape = [1, 1, 1]
+        shape[axis] = size
+        gated = illumination * window.reshape(shape)
+
+    # D-08: normalise_psf (seeds.py:16-22) returns a zero-sum array
+    # unchanged and without error, so without this guard a user-chosen
+    # slit_width narrow enough to destroy the illumination energy could
+    # produce an all-zero PSF seed that flows into blind-RL estimation
+    # looking like a valid one. Compare against the ungated illumination's
+    # own sum (a relative statement), not a fixed constant.
+    original_sum = float(illumination.sum())
+    epsilon = max(float(np.finfo(np.float32).eps), original_sum * 1e-7)
+    if float(gated.sum()) < epsilon:
+        raise ValueError(
+            f"slit_width={fwhm!r} is too narrow to capture positive illumination "
+            f"energy along axis {axis} (extent={size * pixel_size!r})"
+        )
+    return gated
 
 
 def generate_psf_seed(
