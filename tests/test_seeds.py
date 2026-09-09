@@ -832,6 +832,36 @@ class SeedTests(unittest.TestCase):
         )
         self.assertEqual(parameter_names, expected_parameter_names)
 
+    def test_generate_psf_seed_docstring_states_perfect_sync_assumption(self):
+        # G-01-24: the negative test above (no timing-jitter *parameter*) is
+        # satisfiable by an empty docstring and says nothing about what ASLM
+        # mode actually models. This positive assertion is the deliberate
+        # complement: __doc__ must disclose the static, midpoint-centered,
+        # assumed-perfectly-synchronized model (ASLM-04), not just omit a
+        # timing knob.
+        doc = (seeds.generate_psf_seed.__doc__ or "").lower()
+        self.assertTrue(doc, msg="generate_psf_seed.__doc__ must not be empty")
+
+        required_substrings = (
+            "static",
+            "slit",
+            "geometric midpoint",
+            "perfectly synchronized",
+            "assum",
+            "jitter",
+            "out of scope",
+        )
+        for substring in required_substrings:
+            self.assertIn(
+                substring,
+                doc,
+                msg=(
+                    f"generate_psf_seed.__doc__ must disclose {substring!r} as "
+                    "part of the assumed-perfect-synchronization ASLM model "
+                    "(ASLM-04, G-01-24)"
+                ),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
