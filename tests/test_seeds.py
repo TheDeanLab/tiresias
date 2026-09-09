@@ -212,6 +212,75 @@ class SeedTests(unittest.TestCase):
         right_angle_reference = seeds.normalise_psf(detection * right_angle_rotated)
         self.assertFalse(np.allclose(psf, right_angle_reference))
 
+    def test_aslm_seed_real_numeric_end_to_end(self):
+        common_kwargs = dict(
+            na=1.0,
+            detection_na=1.0,
+            illumination_na=0.2,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=1,
+            psf_model="vectorial",
+            dxy=0.108,
+            dz=0.3,
+            psf_size_z=15,
+            psf_size_xy=15,
+            background=0.0,
+            light_sheet_angle=90.0,
+        )
+
+        light_sheet = seeds.generate_psf_seed(psf_mode="light_sheet", **common_kwargs)
+        aslm = seeds.generate_psf_seed(
+            psf_mode="aslm", slit_width=0.4, **common_kwargs
+        )
+
+        self.assertEqual(aslm.shape, (15, 15, 15))
+        self.assertEqual(aslm.dtype, np.float32)
+        self.assertLess(abs(float(aslm.sum(dtype=np.float64)) - 1.0), 1e-5)
+        self.assertFalse(np.allclose(aslm, light_sheet))
+
+        def axis0_variance(psf):
+            marginal = psf.sum(axis=(1, 2), dtype=np.float64)
+            idx = np.arange(marginal.shape[0], dtype=np.float64)
+            centroid = float((marginal * idx).sum() / marginal.sum())
+            return float((marginal * (idx - centroid) ** 2).sum() / marginal.sum())
+
+        self.assertLess(axis0_variance(aslm), axis0_variance(light_sheet))
+
+    def test_psfmodels_centers_beam_waist_at_geometric_midpoint(self):
+        illumination = seeds.generate_theoretical_psf(
+            na=0.2,
+            detection_na=0.2,
+            illumination_na=0.2,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            oversample_factor=1,
+            psf_model="vectorial",
+            dxy=0.108,
+            dz=0.3,
+            psf_size_z=15,
+            psf_size_xy=15,
+            background=0.0,
+        )
+
+        def centroid(marginal):
+            idx = np.arange(marginal.shape[0], dtype=np.float64)
+            return float((marginal * idx).sum() / marginal.sum(dtype=np.float64))
+
+        axis0_marginal = illumination.sum(axis=(1, 2), dtype=np.float64)
+        axis2_marginal = illumination.sum(axis=(0, 1), dtype=np.float64)
+
+        self.assertLess(abs(centroid(axis0_marginal) - 7.0), 0.5)
+        self.assertLess(abs(centroid(axis2_marginal) - 7.0), 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()
