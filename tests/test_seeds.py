@@ -327,6 +327,90 @@ class SeedTests(unittest.TestCase):
         np.testing.assert_allclose(psf, expected, rtol=1e-6, atol=1e-8)
         self.assertTrue(np.isclose(psf.sum(dtype=np.float64), 1.0))
 
+    def test_aslm_slit_axis_override_forces_axis(self):
+        detection = np.ones((9, 9, 9), dtype=np.float32)
+        illumination = np.ones((9, 9, 9), dtype=np.float32)
+        captured = {}
+
+        def _record(illumination_arg, angle):
+            captured["gated"] = np.array(illumination_arg, copy=True)
+            captured["angle"] = angle
+            return illumination_arg
+
+        with mock.patch.object(
+            seeds,
+            "generate_theoretical_psf",
+            side_effect=[detection, illumination],
+        ), mock.patch.object(seeds, "rotate_illumination_psf", side_effect=_record):
+            seeds.generate_psf_seed(
+                psf_mode="aslm",
+                na=1.0,
+                detection_na=1.0,
+                illumination_na=0.2,
+                wavelength=0.561,
+                ni=1.33,
+                ns=1.33,
+                ni0=None,
+                tg=None,
+                tg0=None,
+                ng=None,
+                ng0=None,
+                ti0=None,
+                oversample_factor=3,
+                psf_model="vectorial",
+                dxy=0.108,
+                dz=0.3,
+                psf_size_z=9,
+                psf_size_xy=9,
+                background=0.0,
+                light_sheet_angle=90.0,
+                slit_width=0.216,
+                slit_axis=0,
+            )
+
+        axis0_profile = captured["gated"].sum(axis=(1, 2))
+        axis2_profile = captured["gated"].sum(axis=(0, 1))
+        self.assertEqual(int(np.argmax(axis0_profile)), 4)
+        self.assertLess(axis0_profile[0], axis0_profile[4])
+        self.assertTrue(np.allclose(axis2_profile, axis2_profile[0]))
+
+    def test_aslm_rejects_invalid_slit_axis(self):
+        detection = np.ones((9, 9, 9), dtype=np.float32)
+
+        with mock.patch.object(
+            seeds,
+            "generate_theoretical_psf",
+            return_value=detection,
+        ) as generate_theoretical_psf:
+            with self.assertRaisesRegex(ValueError, "slit_axis must be 0 or 2"):
+                seeds.generate_psf_seed(
+                    psf_mode="aslm",
+                    na=1.0,
+                    detection_na=1.0,
+                    illumination_na=0.2,
+                    wavelength=0.561,
+                    ni=1.33,
+                    ns=1.33,
+                    ni0=None,
+                    tg=None,
+                    tg0=None,
+                    ng=None,
+                    ng0=None,
+                    ti0=None,
+                    oversample_factor=3,
+                    psf_model="vectorial",
+                    dxy=0.108,
+                    dz=0.3,
+                    psf_size_z=9,
+                    psf_size_xy=9,
+                    background=0.0,
+                    light_sheet_angle=90.0,
+                    slit_width=0.216,
+                    slit_axis=1,
+                )
+
+        generate_theoretical_psf.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
