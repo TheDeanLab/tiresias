@@ -247,7 +247,10 @@ def _apply_aslm_slit_gate(
     if float(gated.sum()) < epsilon:
         raise ValueError(
             f"slit_width={fwhm!r} is too narrow to capture positive illumination "
-            f"energy along axis {axis} (extent={size * pixel_size!r})"
+            f"energy along axis {axis} (extent={size * pixel_size!r}); the ASLM "
+            "slit is a static gate centered on the gate axis midpoint, assumed "
+            "perfectly synchronized to the beam waist, so widen slit_width "
+            "rather than adjusting timing"
         )
     return gated
 

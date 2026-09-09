@@ -862,6 +862,29 @@ class SeedTests(unittest.TestCase):
                 ),
             )
 
+        # G-01-24 error-message half: the too-narrow-slit ValueError is the
+        # ASLM error a user is most likely to hit while forming a mental
+        # model of the mode, so it must carry the same disclosure as the
+        # docstring above. Call the private helper directly rather than
+        # routing through generate_psf_seed -- no mocking or psfmodels call
+        # is needed, and this keeps the assertion about message text, not
+        # about PSF numerics.
+        illumination = np.zeros((9, 9, 9), dtype=np.float32)
+        illumination[:, :, 0] = 1.0
+        with self.assertRaises(ValueError) as ctx:
+            seeds._apply_aslm_slit_gate(illumination, 2, 0.001, 0.108, 0.3)
+        message = str(ctx.exception).lower()
+        self.assertIn(
+            "perfectly synchronized",
+            message,
+            msg="too-narrow-slit ValueError must disclose the perfectly-synchronized model (G-01-24)",
+        )
+        self.assertIn(
+            "slit_width",
+            message,
+            msg="too-narrow-slit ValueError must point the user at slit_width (G-01-24)",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
