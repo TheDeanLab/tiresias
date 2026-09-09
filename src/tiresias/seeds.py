@@ -188,12 +188,26 @@ def _resolve_slit_axis(light_sheet_angle: float, slit_axis: int | None = None) -
     return 0 if quadrant % 2 == 0 else 2
 
 
-def _resolve_slit_fwhm(slit_width: float | None, dxy: float) -> float:
-    """Resolve the ASLM slit gate's FWHM in physical units."""
-    del dxy  # unused on this path; plan 01-04 widens this to the slit_width_px form
-    if slit_width is None or slit_width <= 0:
-        raise ValueError(f"slit_width must be > 0, got {slit_width!r}")
-    return slit_width
+def _resolve_slit_fwhm(
+    slit_width: float | None, slit_width_px: int | None, dxy: float
+) -> float:
+    """Resolve the ASLM slit gate's FWHM in physical units from whichever form was supplied."""
+    provided = [value for value in (slit_width, slit_width_px) if value is not None]
+    if len(provided) != 1:
+        raise ValueError(
+            "Exactly one of slit_width or slit_width_px must be provided for psf_mode='aslm'"
+        )
+    if slit_width is not None:
+        if slit_width <= 0:
+            raise ValueError(f"slit_width must be > 0, got {slit_width!r}")
+        return slit_width
+    if slit_width_px <= 0:
+        raise ValueError(f"slit_width_px must be > 0, got {slit_width_px!r}")
+    # D-09: this conversion always uses dxy, even when the resolved gate axis is
+    # 0 (Z, spaced by dz) — deliberate per locked decision D-09, not an
+    # oversight. test_aslm_slit_width_px_converts_via_dxy_even_on_the_z_axis
+    # (plan 01-04) pins this so it goes red if someone "fixes" it later.
+    return slit_width_px * dxy
 
 
 def _gaussian_slit_window(size: int, fwhm: float, pixel_size: float) -> np.ndarray | None:
@@ -247,6 +261,7 @@ def generate_psf_seed(
     light_sheet_angle: float = 90.0,
     slit_width: float | None = None,
     slit_axis: int | None = None,
+    slit_width_px: int | None = None,
 ) -> np.ndarray:
     """Create a single-detection, light-sheet, or ASLM blind-estimation seed PSF."""
     if psf_mode not in ("single", "light_sheet", "aslm"):
@@ -258,7 +273,7 @@ def generate_psf_seed(
     slit_fwhm: float | None = None
     if psf_mode == "aslm":  # D-07: validate before generating any PSF
         gate_axis = _resolve_slit_axis(light_sheet_angle, slit_axis)
-        slit_fwhm = _resolve_slit_fwhm(slit_width, dxy)
+        slit_fwhm = _resolve_slit_fwhm(slit_width, slit_width_px, dxy)
 
     detection = generate_theoretical_psf(
         na=na,
