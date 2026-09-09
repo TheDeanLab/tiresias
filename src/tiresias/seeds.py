@@ -170,8 +170,16 @@ def rotate_illumination_psf(illumination: np.ndarray, angle: float) -> np.ndarra
     )
 
 
-def _resolve_slit_axis(light_sheet_angle: float) -> int:
-    """Resolve the pre-rotation gate axis from the light-sheet angle's quadrant."""
+def _resolve_slit_axis(light_sheet_angle: float, slit_axis: int | None = None) -> int:
+    """Resolve which pre-rotation illumination axis the slit gate narrows."""
+    # D-03: an explicit override bypasses auto-detection entirely. Axis 1 (Y) is
+    # deliberately rejected: rotate_illumination_psf only rotates the Z/X plane
+    # (axes=(0, 2)), so axis 1 is never touched by rotation and gating it would
+    # not correspond to any rolling-shutter direction.
+    if slit_axis is not None:
+        if slit_axis not in (0, 2):
+            raise ValueError(f"slit_axis must be 0 or 2, got {slit_axis!r}")
+        return slit_axis
     # D-01: unconditional round-to-nearest-quadrant, deliberately unlike
     # rotate_illumination_psf's RIGHT_ANGLE_TOLERANCE-gated fast path. Python's
     # round-half-to-even applies at exact tie angles (e.g. 45.0, 135.0); plan
@@ -238,6 +246,7 @@ def generate_psf_seed(
     background: float,
     light_sheet_angle: float = 90.0,
     slit_width: float | None = None,
+    slit_axis: int | None = None,
 ) -> np.ndarray:
     """Create a single-detection, light-sheet, or ASLM blind-estimation seed PSF."""
     if psf_mode not in ("single", "light_sheet", "aslm"):
@@ -248,7 +257,7 @@ def generate_psf_seed(
     gate_axis: int | None = None
     slit_fwhm: float | None = None
     if psf_mode == "aslm":  # D-07: validate before generating any PSF
-        gate_axis = _resolve_slit_axis(light_sheet_angle)
+        gate_axis = _resolve_slit_axis(light_sheet_angle, slit_axis)
         slit_fwhm = _resolve_slit_fwhm(slit_width, dxy)
 
     detection = generate_theoretical_psf(
