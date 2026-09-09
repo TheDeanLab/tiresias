@@ -500,6 +500,58 @@ class SeedTests(unittest.TestCase):
         # the even-quadrant snap of 45.0, while the rotation angle stays 45.0).
         self.assertEqual(captured["angle"], 45.0)
 
+    def test_aslm_invalid_slit_width_raises(self):
+        detection = np.ones((9, 9, 9), dtype=np.float32)
+
+        base_kwargs = dict(
+            psf_mode="aslm",
+            na=1.0,
+            detection_na=1.0,
+            illumination_na=0.2,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=3,
+            psf_model="vectorial",
+            dxy=0.108,
+            dz=0.3,
+            psf_size_z=9,
+            psf_size_xy=9,
+            background=0.0,
+            light_sheet_angle=90.0,
+        )
+
+        cases = [
+            ("neither form supplied", {}, "Exactly one of slit_width or slit_width_px"),
+            (
+                "both forms supplied",
+                {"slit_width": 0.2, "slit_width_px": 2},
+                "Exactly one of slit_width or slit_width_px",
+            ),
+            ("slit_width zero", {"slit_width": 0.0}, "slit_width must be > 0"),
+            ("slit_width negative", {"slit_width": -0.5}, "slit_width must be > 0"),
+            ("slit_width_px zero", {"slit_width_px": 0}, "slit_width_px must be > 0"),
+            ("slit_width_px negative", {"slit_width_px": -3}, "slit_width_px must be > 0"),
+        ]
+
+        for label, extra_kwargs, expected_message in cases:
+            with self.subTest(label=label):
+                with mock.patch.object(
+                    seeds,
+                    "generate_theoretical_psf",
+                    return_value=detection,
+                ) as generate_theoretical_psf:
+                    with self.assertRaisesRegex(ValueError, expected_message):
+                        seeds.generate_psf_seed(**base_kwargs, **extra_kwargs)
+
+                    generate_theoretical_psf.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
