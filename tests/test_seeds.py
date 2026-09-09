@@ -411,6 +411,95 @@ class SeedTests(unittest.TestCase):
 
         generate_theoretical_psf.assert_not_called()
 
+    def _capture_aslm_gate(self, **overrides):
+        """Run generate_psf_seed(psf_mode="aslm", ...), capturing the pre-rotation
+        gated illumination array and the angle passed to rotate_illumination_psf."""
+        detection = np.ones((9, 9, 9), dtype=np.float32)
+        illumination = np.ones((9, 9, 9), dtype=np.float32)
+        captured = {}
+
+        def _record(illumination_arg, angle):
+            captured["gated"] = np.array(illumination_arg, copy=True)
+            captured["angle"] = angle
+            return illumination_arg
+
+        kwargs = dict(
+            psf_mode="aslm",
+            na=1.0,
+            detection_na=1.0,
+            illumination_na=0.2,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=3,
+            psf_model="vectorial",
+            dxy=0.108,
+            dz=0.3,
+            psf_size_z=9,
+            psf_size_xy=9,
+            background=0.0,
+            slit_width=0.216,
+        )
+        kwargs.update(overrides)
+
+        with mock.patch.object(
+            seeds,
+            "generate_theoretical_psf",
+            side_effect=[detection, illumination],
+        ), mock.patch.object(seeds, "rotate_illumination_psf", side_effect=_record):
+            seeds.generate_psf_seed(**kwargs)
+
+        return captured
+
+    def test_aslm_gate_axis_selection_by_angle(self):
+        # Table computed from int(round(angle / 90.0)) % 4 under Python's
+        # round-half-to-even; see this plan's interface_context tie-angle table.
+        cases = [
+            (0.0, 0),
+            (45.0, 0),
+            (90.0, 2),
+            (135.0, 0),
+            (180.0, 0),
+            (270.0, 2),
+        ]
+        for angle, expected_axis in cases:
+            with self.subTest(angle=angle):
+                captured = self._capture_aslm_gate(light_sheet_angle=angle)
+                gated = captured["gated"]
+                axis0_profile = gated.sum(axis=(1, 2))
+                axis1_profile = gated.sum(axis=(0, 2))
+                axis2_profile = gated.sum(axis=(0, 1))
+
+                # Axis 1 (Y) is never gated by any code path.
+                self.assertTrue(np.allclose(axis1_profile, axis1_profile[0]))
+
+                if expected_axis == 0:
+                    narrowed_profile, flat_profile = axis0_profile, axis2_profile
+                else:
+                    narrowed_profile, flat_profile = axis2_profile, axis0_profile
+
+                self.assertEqual(int(np.argmax(narrowed_profile)), 4)
+                self.assertLess(narrowed_profile[0], narrowed_profile[4])
+                self.assertTrue(np.allclose(flat_profile, flat_profile[0]))
+
+    def test_aslm_rotation_uses_true_angle_not_snapped_quadrant(self):
+        captured = self._capture_aslm_gate(light_sheet_angle=45.0)
+
+        axis0_profile = captured["gated"].sum(axis=(1, 2))
+        self.assertEqual(int(np.argmax(axis0_profile)), 4)
+        self.assertLess(axis0_profile[0], axis0_profile[4])
+
+        # D-02: rotate_illumination_psf receives the TRUE angle, not the
+        # quadrant-snapped gate axis (which resolved to axis 0 here, matching
+        # the even-quadrant snap of 45.0, while the rotation angle stays 45.0).
+        self.assertEqual(captured["angle"], 45.0)
+
 
 if __name__ == "__main__":
     unittest.main()
