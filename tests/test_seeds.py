@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import math
 import unittest
 from pathlib import Path
@@ -798,6 +799,38 @@ class SeedTests(unittest.TestCase):
                     np.testing.assert_array_equal(aslm_psf, light_sheet_reference)
                 else:
                     self.assertFalse(np.array_equal(aslm_psf, light_sheet_reference))
+
+    def test_generate_psf_seed_has_no_timing_jitter_parameter(self):
+        parameter_names = tuple(inspect.signature(seeds.generate_psf_seed).parameters)
+
+        forbidden_substrings = (
+            "jitter",
+            "sync",
+            "desync",
+            "timing",
+            "shutter",
+            "delay",
+        )
+        for name in parameter_names:
+            lowered = name.lower()
+            for substring in forbidden_substrings:
+                self.assertNotIn(
+                    substring,
+                    lowered,
+                    msg=(
+                        f"parameter {name!r} carries timing-jitter semantics "
+                        f"(matched substring {substring!r})"
+                    ),
+                )
+
+        expected_parameter_names = (
+            "psf_mode", "na", "detection_na", "illumination_na", "wavelength",
+            "ni", "ns", "ni0", "tg", "tg0", "ng", "ng0", "ti0",
+            "oversample_factor", "psf_model", "dxy", "dz", "psf_size_z",
+            "psf_size_xy", "background", "light_sheet_angle",
+            "slit_width", "slit_axis", "slit_width_px",
+        )
+        self.assertEqual(parameter_names, expected_parameter_names)
 
 
 if __name__ == "__main__":
