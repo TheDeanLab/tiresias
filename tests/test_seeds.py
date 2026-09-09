@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -673,6 +674,69 @@ class SeedTests(unittest.TestCase):
         # ...and NOT dz — this assertion is what turns red if someone "fixes"
         # the conversion to be axis-aware.
         self.assertFalse(np.allclose(psf_px, psf_dz_equivalent))
+
+    def test_aslm_too_narrow_slit_width_raises(self):
+        # All energy sits at gate-axis (axis 2, since light_sheet_angle=90.0)
+        # index 0, distance 4 from the size-9 axis's centre index 4.
+        illumination = np.zeros((9, 9, 9), dtype=np.float32)
+        illumination[:, :, 0] = 1.0
+
+        dxy = 0.108
+        distance_px = 4.0
+
+        # Positive-but-negligible slit_width, inverted from a target surviving
+        # fraction rather than a magic constant: at slit_width below, the
+        # Gaussian window value at distance_px equals target_fraction exactly.
+        target_fraction = 1e-9  # well under the 1e-7 relative epsilon
+        sigma_px = distance_px / math.sqrt(-2.0 * math.log(target_fraction))
+        fwhm_px = sigma_px * 2.0 * math.sqrt(2.0 * math.log(2.0))
+        negligible_slit_width = fwhm_px * dxy
+
+        base_kwargs = dict(
+            psf_mode="aslm",
+            na=1.0,
+            detection_na=1.0,
+            illumination_na=0.2,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=3,
+            psf_model="vectorial",
+            dxy=dxy,
+            dz=0.3,
+            psf_size_z=9,
+            psf_size_xy=9,
+            background=0.0,
+            light_sheet_angle=90.0,
+        )
+
+        cases = [
+            ("underflow to exact zero", 0.001),
+            ("positive but negligible", negligible_slit_width),
+        ]
+
+        for label, slit_width in cases:
+            with self.subTest(label=label):
+                detection = np.ones((9, 9, 9), dtype=np.float32)
+                with mock.patch.object(
+                    seeds,
+                    "generate_theoretical_psf",
+                    side_effect=[detection, illumination.copy()],
+                ):
+                    with self.assertRaisesRegex(ValueError, "too narrow"):
+                        seeds.generate_psf_seed(slit_width=slit_width, **base_kwargs)
+
+        # Companion assertion (ASLM-06): normalise_psf's silent zero-energy
+        # pass-through is exactly the behaviour the guard above must be
+        # distinct from — it returns an all-zero array unchanged, no error.
+        zero_psf = seeds.normalise_psf(np.zeros((9, 9, 9), dtype=np.float32))
+        np.testing.assert_array_equal(zero_psf, np.zeros((9, 9, 9), dtype=np.float32))
 
 
 if __name__ == "__main__":
