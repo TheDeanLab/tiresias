@@ -281,6 +281,52 @@ class SeedTests(unittest.TestCase):
         self.assertLess(abs(centroid(axis0_marginal) - 7.0), 0.5)
         self.assertLess(abs(centroid(axis2_marginal) - 7.0), 0.5)
 
+    def test_aslm_seed_multiplies_detection_by_gated_illumination(self):
+        detection = np.ones((5, 5, 5), dtype=np.float32)
+        illumination = np.ones((5, 5, 5), dtype=np.float32)
+
+        with mock.patch.object(
+            seeds,
+            "generate_theoretical_psf",
+            side_effect=[detection, illumination],
+        ):
+            psf = seeds.generate_psf_seed(
+                psf_mode="aslm",
+                na=1.0,
+                detection_na=1.0,
+                illumination_na=0.2,
+                wavelength=0.561,
+                ni=1.33,
+                ns=1.33,
+                ni0=None,
+                tg=None,
+                tg0=None,
+                ng=None,
+                ng0=None,
+                ti0=None,
+                oversample_factor=3,
+                psf_model="vectorial",
+                dxy=0.108,
+                dz=0.3,
+                psf_size_z=5,
+                psf_size_xy=5,
+                background=0.0,
+                light_sheet_angle=90.0,
+                slit_width=0.216,
+            )
+
+        sigma = (0.216 / 0.108) / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+        idx = np.arange(5, dtype=np.float64)
+        window = np.exp(-0.5 * ((idx - 2.0) / sigma) ** 2).astype(np.float32)
+        gated = illumination * window.reshape(1, 1, 5)
+        expected = seeds.normalise_psf(
+            detection * seeds.rotate_illumination_psf(gated, 90.0)
+        )
+
+        self.assertEqual(psf.shape, (5, 5, 5))
+        np.testing.assert_allclose(psf, expected, rtol=1e-6, atol=1e-8)
+        self.assertTrue(np.isclose(psf.sum(dtype=np.float64), 1.0))
+
 
 if __name__ == "__main__":
     unittest.main()
