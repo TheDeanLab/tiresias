@@ -738,6 +738,67 @@ class SeedTests(unittest.TestCase):
         zero_psf = seeds.normalise_psf(np.zeros((9, 9, 9), dtype=np.float32))
         np.testing.assert_array_equal(zero_psf, np.zeros((9, 9, 9), dtype=np.float32))
 
+    def test_aslm_full_extent_equals_light_sheet(self):
+        dxy = 0.108
+        psf_size_xy = 5
+        full_extent = psf_size_xy * dxy
+
+        base_kwargs = dict(
+            na=1.0,
+            detection_na=1.0,
+            illumination_na=0.2,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=3,
+            psf_model="vectorial",
+            dxy=dxy,
+            dz=0.3,
+            psf_size_z=5,
+            psf_size_xy=psf_size_xy,
+            background=0.0,
+            light_sheet_angle=90.0,
+        )
+
+        def _fresh_pair():
+            return [
+                np.ones((5, 5, 5), dtype=np.float32),
+                np.ones((5, 5, 5), dtype=np.float32),
+            ]
+
+        with mock.patch.object(
+            seeds, "generate_theoretical_psf", side_effect=_fresh_pair()
+        ):
+            light_sheet_reference = seeds.generate_psf_seed(
+                psf_mode="light_sheet", **base_kwargs
+            )
+
+        cases = [
+            ("below full extent", 0.9 * full_extent, False),
+            ("at full extent", full_extent, True),
+            ("above full extent", 2 * full_extent, True),
+        ]
+
+        for label, slit_width, expect_equal in cases:
+            with self.subTest(label=label):
+                with mock.patch.object(
+                    seeds, "generate_theoretical_psf", side_effect=_fresh_pair()
+                ):
+                    aslm_psf = seeds.generate_psf_seed(
+                        psf_mode="aslm", slit_width=slit_width, **base_kwargs
+                    )
+
+                if expect_equal:
+                    np.testing.assert_array_equal(aslm_psf, light_sheet_reference)
+                else:
+                    self.assertFalse(np.array_equal(aslm_psf, light_sheet_reference))
+
 
 if __name__ == "__main__":
     unittest.main()
