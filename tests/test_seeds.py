@@ -98,6 +98,120 @@ class SeedTests(unittest.TestCase):
         self.assertTrue(np.isclose(psf.sum(dtype=np.float64), 1.0))
         self.assertGreater(float(psf.sum(axis=(1, 2)).max()), 0.0)
 
+    def test_single_seed_returns_normalized_detection_psf(self):
+        detection = np.arange(3 * 5 * 5, dtype=np.float32).reshape(3, 5, 5)
+        expected = detection / detection.sum(dtype=np.float64)
+
+        with mock.patch.object(
+            seeds,
+            "generate_theoretical_psf",
+            return_value=detection,
+        ) as generate_theoretical_psf:
+            psf = seeds.generate_psf_seed(
+                psf_mode="single",
+                na=1.0,
+                detection_na=1.0,
+                illumination_na=0.2,
+                wavelength=0.561,
+                ni=1.33,
+                ns=1.33,
+                ni0=None,
+                tg=None,
+                tg0=None,
+                ng=None,
+                ng0=None,
+                ti0=None,
+                oversample_factor=3,
+                psf_model="vectorial",
+                dxy=0.108,
+                dz=0.3,
+                psf_size_z=3,
+                psf_size_xy=5,
+                background=0.0,
+                light_sheet_angle=90.0,
+            )
+
+        self.assertEqual(psf.dtype, np.float32)
+        np.testing.assert_allclose(psf, expected, rtol=1e-6, atol=1e-8)
+        self.assertEqual(generate_theoretical_psf.call_count, 1)
+
+    def test_generate_psf_seed_rejects_unsupported_psf_mode(self):
+        detection = np.ones((3, 5, 5), dtype=np.float32)
+
+        with mock.patch.object(
+            seeds,
+            "generate_theoretical_psf",
+            return_value=detection,
+        ):
+            with self.assertRaisesRegex(ValueError, "(?i)nsupported psf_mode"):
+                seeds.generate_psf_seed(
+                    psf_mode="not_a_real_mode",
+                    na=1.0,
+                    detection_na=1.0,
+                    illumination_na=0.2,
+                    wavelength=0.561,
+                    ni=1.33,
+                    ns=1.33,
+                    ni0=None,
+                    tg=None,
+                    tg0=None,
+                    ng=None,
+                    ng0=None,
+                    ti0=None,
+                    oversample_factor=3,
+                    psf_model="vectorial",
+                    dxy=0.108,
+                    dz=0.3,
+                    psf_size_z=3,
+                    psf_size_xy=5,
+                    background=0.0,
+                    light_sheet_angle=90.0,
+                )
+
+    def test_light_sheet_seed_at_non_right_angle(self):
+        detection = np.ones((5, 5, 5), dtype=np.float32)
+        illumination = np.zeros((5, 5, 5), dtype=np.float32)
+        illumination[:, :, 2] = 1.0
+
+        with mock.patch.object(
+            seeds,
+            "generate_theoretical_psf",
+            side_effect=[detection, illumination],
+        ):
+            psf = seeds.generate_psf_seed(
+                psf_mode="light_sheet",
+                na=1.0,
+                detection_na=1.0,
+                illumination_na=0.2,
+                wavelength=0.561,
+                ni=1.33,
+                ns=1.33,
+                ni0=None,
+                tg=None,
+                tg0=None,
+                ng=None,
+                ng0=None,
+                ti0=None,
+                oversample_factor=3,
+                psf_model="vectorial",
+                dxy=0.108,
+                dz=0.3,
+                psf_size_z=5,
+                psf_size_xy=5,
+                background=0.0,
+                light_sheet_angle=45.0,
+            )
+
+        self.assertEqual(psf.shape, illumination.shape)
+        self.assertEqual(psf.dtype, np.float32)
+        self.assertTrue(np.isclose(psf.sum(dtype=np.float64), 1.0))
+
+        right_angle_rotated = seeds._center_crop_or_pad(
+            np.rot90(illumination, k=1, axes=(0, 2)), illumination.shape
+        )
+        right_angle_reference = seeds.normalise_psf(detection * right_angle_rotated)
+        self.assertFalse(np.allclose(psf, right_angle_reference))
+
 
 if __name__ == "__main__":
     unittest.main()
