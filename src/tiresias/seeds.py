@@ -279,7 +279,17 @@ def generate_psf_seed(
     slit_axis: int | None = None,
     slit_width_px: int | None = None,
 ) -> np.ndarray:
-    """Create a single-detection, light-sheet, or ASLM blind-estimation seed PSF."""
+    """Create a single-detection, light-sheet, or ASLM blind-estimation seed PSF.
+
+    ASLM mode multiplies the illumination PSF, in its pre-rotation frame, by a
+    static Gaussian slit gate centered on the geometric midpoint of the gate
+    axis. The gate is a fixed spatial taper, not a time-resolved simulation:
+    the rolling shutter is assumed to be perfectly synchronized with the
+    swept beam waist, so the illuminated slit always sits exactly at the
+    waist. Timing jitter, shutter/beam desynchronization, and sweep-velocity
+    error are therefore not modelled and are explicitly out of scope for
+    this milestone.
+    """
     if psf_mode not in ("single", "light_sheet", "aslm"):
         raise ValueError(
             f"Unsupported psf_mode={psf_mode!r}; expected one of 'single', 'light_sheet', 'aslm'"
