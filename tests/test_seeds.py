@@ -552,6 +552,128 @@ class SeedTests(unittest.TestCase):
 
                     generate_theoretical_psf.assert_not_called()
 
+    def test_aslm_slit_width_px_matches_physical_equivalent(self):
+        common_kwargs = dict(
+            psf_mode="aslm",
+            na=1.0,
+            detection_na=1.0,
+            illumination_na=0.2,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=3,
+            psf_model="vectorial",
+            dxy=0.108,
+            dz=0.3,
+            psf_size_z=9,
+            psf_size_xy=9,
+            background=0.0,
+            light_sheet_angle=90.0,
+        )
+
+        with mock.patch.object(
+            seeds,
+            "generate_theoretical_psf",
+            side_effect=[
+                np.ones((9, 9, 9), dtype=np.float32),
+                np.ones((9, 9, 9), dtype=np.float32),
+            ],
+        ):
+            psf_px = seeds.generate_psf_seed(slit_width_px=2, **common_kwargs)
+
+        with mock.patch.object(
+            seeds,
+            "generate_theoretical_psf",
+            side_effect=[
+                np.ones((9, 9, 9), dtype=np.float32),
+                np.ones((9, 9, 9), dtype=np.float32),
+            ],
+        ):
+            psf_physical = seeds.generate_psf_seed(
+                slit_width=2 * common_kwargs["dxy"], **common_kwargs
+            )
+
+        # Doubling is exact in binary floating point, so slit_width_px=2 at
+        # dxy=0.108 must gate the same pixels exactly as slit_width=2*0.108 —
+        # ASLM-03's actual claim, checked without a tolerance.
+        np.testing.assert_array_equal(psf_px, psf_physical)
+
+    def test_aslm_slit_width_px_converts_via_dxy_even_on_the_z_axis(self):
+        # D-09's conversion pin: slit_width_px * dxy is unconditional, even
+        # though the gate axis is forced to axis 0 here (Z, spaced by dz, not
+        # dxy). This test goes red if the conversion is ever "fixed" to be
+        # axis-aware without revisiting the locked decision.
+        common_kwargs = dict(
+            psf_mode="aslm",
+            na=1.0,
+            detection_na=1.0,
+            illumination_na=0.2,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=3,
+            psf_model="vectorial",
+            dxy=0.108,
+            dz=0.3,
+            psf_size_z=9,
+            psf_size_xy=9,
+            background=0.0,
+            light_sheet_angle=90.0,
+            slit_axis=0,
+        )
+
+        with mock.patch.object(
+            seeds,
+            "generate_theoretical_psf",
+            side_effect=[
+                np.ones((9, 9, 9), dtype=np.float32),
+                np.ones((9, 9, 9), dtype=np.float32),
+            ],
+        ):
+            psf_px = seeds.generate_psf_seed(slit_width_px=2, **common_kwargs)
+
+        with mock.patch.object(
+            seeds,
+            "generate_theoretical_psf",
+            side_effect=[
+                np.ones((9, 9, 9), dtype=np.float32),
+                np.ones((9, 9, 9), dtype=np.float32),
+            ],
+        ):
+            psf_dxy_equivalent = seeds.generate_psf_seed(
+                slit_width=2 * common_kwargs["dxy"], **common_kwargs
+            )
+
+        with mock.patch.object(
+            seeds,
+            "generate_theoretical_psf",
+            side_effect=[
+                np.ones((9, 9, 9), dtype=np.float32),
+                np.ones((9, 9, 9), dtype=np.float32),
+            ],
+        ):
+            psf_dz_equivalent = seeds.generate_psf_seed(
+                slit_width=2 * common_kwargs["dz"], **common_kwargs
+            )
+
+        # Proves the conversion used dxy...
+        np.testing.assert_array_equal(psf_px, psf_dxy_equivalent)
+        # ...and NOT dz — this assertion is what turns red if someone "fixes"
+        # the conversion to be axis-aware.
+        self.assertFalse(np.allclose(psf_px, psf_dz_equivalent))
+
 
 if __name__ == "__main__":
     unittest.main()
