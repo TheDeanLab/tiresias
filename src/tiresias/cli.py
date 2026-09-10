@@ -9,7 +9,7 @@ from typing import Sequence
 from tifffile import imread, imwrite
 
 from .blind_rl import deconvolve_with_cupy
-from .seeds import generate_theoretical_psf, load_psf_seed, resolve_dxy
+from .seeds import generate_psf_seed, load_psf_seed, resolve_dxy
 from .tiling import (
     DEFAULT_ADAPTIVE_KEEP_TILES,
     DEFAULT_ADAPTIVE_SCOUT_ITERS,
@@ -55,6 +55,21 @@ def _add_optical_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--psf-size-z", dest="psf_size_z", type=int, default=61)
     parser.add_argument("--psf-size-xy", dest="psf_size_xy", type=int, default=128)
     parser.add_argument("--background", type=float, default=0.0)
+    parser.add_argument(
+        "--psf-mode",
+        dest="psf_mode",
+        choices=("single", "light_sheet", "aslm"),
+        default="single",
+    )
+    parser.add_argument("--slit-width", dest="slit_width", type=float, default=None)
+    parser.add_argument("--slit-width-px", dest="slit_width_px", type=int, default=None)
+    parser.add_argument("--slit-axis", dest="slit_axis", type=int, default=None)
+    parser.add_argument(
+        "--light-sheet-angle",
+        dest="light_sheet_angle",
+        type=float,
+        default=90.0,
+    )
 
 
 def build_estimate_psf_parser() -> argparse.ArgumentParser:
@@ -128,7 +143,8 @@ def estimate_psf_main(argv: Sequence[str] | None = None) -> None:
         psf_seed = load_psf_seed(args.psf_seed_path, psf_shape)
     else:
         dxy = resolve_dxy(args.dxy, args.camera_pixel_size, args.magnification)
-        psf_seed = generate_theoretical_psf(
+        psf_seed = generate_psf_seed(
+            psf_mode=args.psf_mode,
             na=args.na,
             detection_na=args.detection_na,
             illumination_na=args.illumination_na,
@@ -148,6 +164,10 @@ def estimate_psf_main(argv: Sequence[str] | None = None) -> None:
             psf_size_z=args.psf_size_z,
             psf_size_xy=args.psf_size_xy,
             background=args.background,
+            light_sheet_angle=args.light_sheet_angle,
+            slit_width=args.slit_width,
+            slit_width_px=args.slit_width_px,
+            slit_axis=args.slit_axis,
         )
     estimated = estimate_psf_from_chunks(
         image_path=args.image_path,
