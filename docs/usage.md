@@ -310,6 +310,34 @@ pre-rotation frame, by a narrow Gaussian slit gate — modeling the rolling
 shutter that follows the swept beam waist, assumed perfectly synchronized to
 it.
 
+The slit gate multiplies the illumination PSF in its pre-rotation frame,
+before `rotate_illumination_psf` runs. Applying the gate before rotation is
+what keeps the result correct at oblique `light_sheet_angle` values, not only
+at 90 degrees.
+
+The gate narrows exactly one axis of the `(z, y, x)` volume. By default that
+axis is derived from `light_sheet_angle` by rounding the angle to the nearest
+cardinal quadrant: even quadrants gate axis 0 (Z), odd quadrants gate axis 2
+(X). The default `light_sheet_angle=90.0` gates axis 2 (X); `0.0` or `180.0`
+gate axis 0 (Z). Exact tie angles resolve through Python's round-half-to-even
+rule, so 45, 135, 225, and 315 degrees all resolve to axis 0. This rounding is
+unconditional — an oblique angle still snaps to a cardinal gating axis, which
+is exactly why the `slit_axis` override exists.
+
+Pass `slit_axis` to bypass auto-detection entirely. It accepts only `0` (Z) or
+`2` (X); `1` (Y) is rejected with a `ValueError`, because `rotate_illumination_psf`
+only rotates the Z/X plane, so gating Y would not correspond to any
+rolling-shutter direction. Use the override for oblique `light_sheet_angle`
+values where the snapped axis is not the one you want, or to match a
+lab-specific axis convention.
+
+The gate itself is a Gaussian taper, not a hard binary mask — pixels outside
+the slit are attenuated smoothly rather than zeroed. `slit_width` is the
+taper's full width at half maximum (FWHM), and the taper is centered on the
+geometric midpoint of the gated axis, matching the centered beam waist that
+`psfmodels` produces. The pixel spacing used to convert the physical FWHM into
+pixels is `dz` when the gate axis is 0 (Z) and `dxy` when it is 2 (X).
+
 ## Performance Notes
 
 - Tiresias clamps blind PSF estimation to one CuPy tile worker. This avoids
