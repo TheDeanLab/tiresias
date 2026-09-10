@@ -504,3 +504,20 @@ Check the input volume, channel selection, and background handling.
 
 Reduce `--chunk-xy`, reduce `--blind-z-slices`, check GPU availability, and
 confirm that the input TIFF is a 3-D volume with non-zero signal.
+
+`Exactly one of slit_width or slit_width_px must be provided for psf_mode='aslm'`
+
+`aslm` mode needs exactly one width form. Supplying both `slit_width` and
+`slit_width_px`, or neither, raises this error. See the physical-unit vs.
+pixel-count discussion in PSF Seed Modes above to choose the form that fits
+your gate axis.
+
+`is too narrow to capture positive illumination energy`
+
+The requested `slit_width` (or `slit_width_px`) retained no usable
+illumination energy along the gate axis. This guard exists because
+normalizing an all-zero seed would otherwise pass silently into blind
+estimation; the error is raised before any expensive estimation work begins.
+The ASLM gate is a static slit, perfectly synchronized to the beam waist, so
+there is no timing to adjust — widen `slit_width` (or `slit_width_px`)
+instead.
