@@ -338,6 +338,59 @@ geometric midpoint of the gated axis, matching the centered beam waist that
 `psfmodels` produces. The pixel spacing used to convert the physical FWHM into
 pixels is `dz` when the gate axis is 0 (Z) and `dxy` when it is 2 (X).
 
+`slit_width` is a physical width in the same units as `dxy` and `dz`
+(micrometers, per Input Expectations). `slit_width_px` is the equivalent
+pixel-count form. Exactly one of the two must be supplied for `psf_mode="aslm"`
+— supplying both, or neither, raises a `ValueError` — and both must be
+positive.
+
+`slit_width_px` is always converted to physical units through `dxy`, even when
+the resolved gate axis is 0 (Z, whose samples are spaced by `dz`) — this is a
+deliberate design decision, not an oversight. If you are gating Z, the
+pixel-count form does not mean "this many Z planes"; prefer the physical
+`slit_width` form when gating Z unless you specifically want the
+`dxy`-scaled behavior.
+
+The two forms produce identical seeds when the pixel count is scaled by the
+same spacing used for conversion (`dxy`). This example builds the same `aslm`
+seed two ways — once with a physical `slit_width`, once with an equivalent
+`slit_width_px` — and confirms they match:
+
+```python
+import numpy as np
+
+from tiresias import generate_psf_seed
+
+common = dict(
+    na=1.0,
+    detection_na=1.0,
+    illumination_na=0.2,
+    wavelength=0.561,
+    ni=1.33,
+    ns=1.33,
+    ni0=None,
+    tg=None,
+    tg0=None,
+    ng=None,
+    ng0=None,
+    ti0=None,
+    oversample_factor=3,
+    psf_model="vectorial",
+    dxy=0.108,
+    dz=0.300,
+    psf_size_z=61,
+    psf_size_xy=128,
+    background=0.0,
+    light_sheet_angle=90.0,
+)
+
+seed_px = generate_psf_seed(psf_mode="aslm", slit_width_px=20, **common)
+seed_physical = generate_psf_seed(psf_mode="aslm", slit_width=20 * 0.108, **common)
+
+print(np.array_equal(seed_px, seed_physical))
+# True
+```
+
 ## Performance Notes
 
 - Tiresias clamps blind PSF estimation to one CuPy tile worker. This avoids
