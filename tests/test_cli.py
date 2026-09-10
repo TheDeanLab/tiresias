@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import warnings
 from pathlib import Path
 from unittest import mock
 
@@ -457,6 +458,73 @@ class CliTests(unittest.TestCase):
         self.assertEqual(imread.call_args_list[1].args[0], Path("estimated_psf.tif"))
         deconvolve.assert_called_once_with(image, psf, 8, device_id=1)
         imwrite.assert_called_once_with(Path("restored.tif"), restored)
+
+    def test_deconvolve_cli_psf_path_takes_precedence_over_generation_flags(self):
+        from tiresias import cli
+
+        image = np.ones((3, 5, 5), dtype=np.float32)
+        psf = np.ones((3, 3, 3), dtype=np.float32) / 27.0
+        restored = image.copy()
+
+        with (
+            mock.patch.object(cli, "imread", side_effect=[image, psf]) as imread,
+            mock.patch.object(cli, "generate_psf_seed") as generate,
+            mock.patch.object(cli, "deconvolve_with_cupy", return_value=restored) as deconvolve,
+            mock.patch.object(cli, "imwrite"),
+            warnings.catch_warnings(record=True) as recorded_warnings,
+        ):
+            warnings.simplefilter("always")
+            cli.deconvolve_main(
+                [
+                    "--image-path",
+                    "volume.tif",
+                    "--psf-path",
+                    "estimated_psf.tif",
+                    "--output-path",
+                    "restored.tif",
+                    "--psf-mode",
+                    "aslm",
+                    "--slit-width",
+                    "0.4",
+                    "--detection-na",
+                    "1.0",
+                    "--wavelength",
+                    "0.561",
+                    "--ni",
+                    "1.33",
+                    "--ns",
+                    "1.33",
+                    "--dxy",
+                    "0.108",
+                    "--dz",
+                    "0.3",
+                    "--n-iters",
+                    "8",
+                    "--device-id",
+                    "1",
+                ]
+            )
+
+        generate.assert_not_called()
+        self.assertEqual(imread.call_args_list[1].args[0], Path("estimated_psf.tif"))
+        deconvolve.assert_called_once_with(image, psf, 8, device_id=1)
+        self.assertEqual(recorded_warnings, [])
+
+    def test_both_cli_parsers_expose_the_aslm_flag_surface(self):
+        from tiresias import cli
+
+        estimate_ns = cli.build_estimate_psf_parser().parse_args(
+            ["--image-path", "volume.tif", "--output-path", "out.tif"]
+        )
+        deconvolve_ns = cli.build_deconvolve_parser().parse_args(
+            ["--image-path", "volume.tif", "--output-path", "out.tif"]
+        )
+
+        for attr in ("psf_mode", "slit_width", "slit_width_px", "slit_axis", "light_sheet_angle"):
+            with self.subTest(attr=attr):
+                self.assertTrue(hasattr(estimate_ns, attr))
+                self.assertTrue(hasattr(deconvolve_ns, attr))
+                self.assertEqual(getattr(estimate_ns, attr), getattr(deconvolve_ns, attr))
 
 
 if __name__ == "__main__":
