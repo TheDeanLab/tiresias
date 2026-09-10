@@ -355,6 +355,77 @@ class CliTests(unittest.TestCase):
         self.assertEqual(actual.dtype, np.float32)
         self.assertEqual(actual.shape, (61, 128, 128))
 
+    def test_deconvolve_cli_generates_aslm_seed_when_psf_path_omitted(self):
+        from tiresias import cli
+
+        image = np.ones((3, 5, 5), dtype=np.float32)
+
+        common_argv = [
+            "--image-path",
+            "volume.tif",
+            "--output-path",
+            "restored.tif",
+            "--detection-na",
+            "1.0",
+            "--illumination-na",
+            "0.2",
+            "--wavelength",
+            "0.561",
+            "--ni",
+            "1.33",
+            "--ns",
+            "1.33",
+            "--dxy",
+            "0.108",
+            "--dz",
+            "0.3",
+            "--oversample-factor",
+            "1",
+            "--psf-size-z",
+            "15",
+            "--psf-size-xy",
+            "15",
+            "--n-iters",
+            "8",
+            "--device-id",
+            "1",
+        ]
+
+        seeds = {}
+        for mode_args, key in (
+            (["--psf-mode", "light_sheet"], "light_sheet"),
+            (["--psf-mode", "aslm", "--slit-width", "0.4"], "aslm"),
+        ):
+            with (
+                mock.patch.object(cli, "imread", return_value=image) as imread,
+                mock.patch.object(
+                    cli, "deconvolve_with_cupy", side_effect=lambda image, psf, n_iters, **kwargs: psf
+                ) as deconvolve,
+                mock.patch.object(cli, "imwrite"),
+            ):
+                cli.deconvolve_main(common_argv + mode_args)
+                self.assertEqual(imread.call_count, 1)
+                self.assertEqual(imread.call_args.args[0], Path("volume.tif"))
+                self.assertEqual(deconvolve.call_args.args[2], 8)
+                self.assertEqual(deconvolve.call_args.kwargs["device_id"], 1)
+                seeds[key] = deconvolve.call_args.args[1]
+
+        light_sheet = seeds["light_sheet"]
+        aslm = seeds["aslm"]
+
+        self.assertEqual(aslm.shape, (15, 15, 15))
+        self.assertEqual(aslm.dtype, np.float32)
+        self.assertAlmostEqual(float(aslm.sum(dtype=np.float64)), 1.0, delta=1e-5)
+        self.assertFalse(np.allclose(aslm, light_sheet))
+
+        def _axis0_variance(psf):
+            marginal = psf.sum(axis=(1, 2), dtype=np.float64)
+            idx = np.arange(psf.shape[0], dtype=np.float64)
+            centroid = float((marginal * idx).sum() / marginal.sum())
+            return float((marginal * (idx - centroid) ** 2).sum() / marginal.sum())
+
+        self.assertLess(_axis0_variance(aslm), _axis0_variance(light_sheet))
+
     def test_deconvolve_cli_reads_inputs_and_writes_restored_tiff(self):
         from tiresias import cli
 
