@@ -299,6 +299,62 @@ class CliTests(unittest.TestCase):
 
         self.assertFalse(hasattr(cli, "generate_theoretical_psf"))
 
+    def test_estimate_psf_cli_default_mode_output_is_bit_identical_to_pre_refactor(self):
+        from tiresias import cli
+        from tiresias.seeds import generate_theoretical_psf
+
+        expected = generate_theoretical_psf(
+            na=None,
+            detection_na=1.0,
+            illumination_na=None,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=3,
+            psf_model="vectorial",
+            dxy=0.108,
+            dz=0.3,
+            psf_size_z=61,
+            psf_size_xy=128,
+            background=0.0,
+        )
+
+        with (
+            mock.patch.object(cli, "estimate_psf_from_chunks") as estimate,
+            mock.patch.object(cli, "imwrite"),
+        ):
+            cli.estimate_psf_main(
+                [
+                    "--image-path",
+                    "volume.tif",
+                    "--output-path",
+                    "estimated_psf.tif",
+                    "--detection-na",
+                    "1.0",
+                    "--wavelength",
+                    "0.561",
+                    "--ni",
+                    "1.33",
+                    "--ns",
+                    "1.33",
+                    "--dxy",
+                    "0.108",
+                    "--dz",
+                    "0.3",
+                ]
+            )
+            actual = estimate.call_args.kwargs["psf_seed"]
+
+        np.testing.assert_array_equal(actual, expected)
+        self.assertEqual(actual.dtype, np.float32)
+        self.assertEqual(actual.shape, (61, 128, 128))
+
     def test_deconvolve_cli_reads_inputs_and_writes_restored_tiff(self):
         from tiresias import cli
 
