@@ -94,6 +94,24 @@ tiresias-estimate-psf \
   --vram-gb 24
 ```
 
+Run in `aslm` mode with a physical-units slit width:
+
+```bash
+tiresias-estimate-psf \
+  --image-path volume.tif \
+  --output-path estimated_psf.tif \
+  --dxy 0.108 \
+  --dz 0.300 \
+  --wavelength 0.561 \
+  --detection-na 1.0 \
+  --illumination-na 0.2 \
+  --ni 1.33 \
+  --ns 1.33 \
+  --psf-mode aslm \
+  --slit-width 2.0 \
+  --light-sheet-angle 90.0
+```
+
 Common PSF-estimation options:
 
 | Option | Default | Meaning |
@@ -113,6 +131,13 @@ Common PSF-estimation options:
 | `--vram-gb` | auto | Override detected free VRAM for tile sizing. |
 | `--cache-dir` | `.psf_cache` next to input | Cache directory for merged PSFs. |
 | `--no-psf-cache` | off | Force recomputation. |
+| `--psf-mode` | `single` | Theoretical seed mode: `single`, `light_sheet`, or `aslm`. The default preserves existing behavior exactly. |
+| `--slit-width` | none | ASLM slit gate FWHM in physical units (same units as `--dxy`/`--dz`). Applies only to `aslm` mode; exactly one of `--slit-width` or `--slit-width-px` must be supplied. |
+| `--slit-width-px` | none | ASLM slit gate FWHM as a pixel count, converted to physical units via `--dxy`. Applies only to `aslm` mode; exactly one of `--slit-width` or `--slit-width-px` must be supplied. |
+| `--slit-axis` | auto | Override the auto-detected ASLM gate axis (`0` for Z, `2` for X). Applies only to `aslm` mode. |
+| `--light-sheet-angle` | `90.0` | Illumination rotation angle in degrees, used by both `light_sheet` and `aslm` modes. |
+
+These five flags are shared by both `tiresias-estimate-psf` and `tiresias-deconvolve` via the same optical-argument parser.
 
 The output PSF is a float32 TIFF normalized to sum to one.
 Without `--psf-seed-path`, theoretical seed generation requires
@@ -132,6 +157,32 @@ tiresias-deconvolve \
 
 The deconvolution command loads the image and PSF from TIFF, runs
 accelerated CuPy FFT Richardson-Lucy restoration, and writes a uint16 TIFF.
+
+`--psf-path` is optional. Supplying it loads that TIFF as the PSF. Omitting it
+makes `tiresias-deconvolve` build a theoretical seed through the same
+`generate_psf_seed()` path and the same optical and slit flags as
+`tiresias-estimate-psf` (`--psf-mode`, `--slit-width`, `--slit-width-px`,
+`--slit-axis`, `--light-sheet-angle`, and the other optical arguments). When
+both `--psf-path` and optical flags are given, the loaded PSF wins.
+
+Generate an ASLM seed on the fly, with no PSF path:
+
+```bash
+tiresias-deconvolve \
+  --image-path volume.tif \
+  --output-path restored.tif \
+  --dxy 0.108 \
+  --dz 0.300 \
+  --wavelength 0.561 \
+  --detection-na 1.0 \
+  --illumination-na 0.2 \
+  --ni 1.33 \
+  --ns 1.33 \
+  --psf-mode aslm \
+  --slit-width 2.0 \
+  --n-iters 20 \
+  --device-id 0
+```
 
 ## Python API
 
