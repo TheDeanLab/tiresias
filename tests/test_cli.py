@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import unittest
 import warnings
 from pathlib import Path
@@ -651,6 +652,105 @@ class CliTests(unittest.TestCase):
                     imwrite.assert_not_called()
                     # `imread` legitimately runs once before PSF acquisition on this
                     # command (plan 02-02's recorded ordering) — not asserted here.
+
+    def test_both_cli_entry_points_plumb_every_aslm_flag_to_the_seed_function(self):
+        from tiresias import cli
+
+        seed = np.ones((3, 3, 3), dtype=np.float32) / 27.0
+        image = np.ones((3, 5, 5), dtype=np.float32)
+
+        common_argv = [
+            "--detection-na",
+            "1.0",
+            "--wavelength",
+            "0.561",
+            "--ni",
+            "1.33",
+            "--ns",
+            "1.33",
+            "--dxy",
+            "0.108",
+            "--dz",
+            "0.3",
+            "--psf-mode",
+            "aslm",
+            "--slit-width-px",
+            "4",
+            "--slit-axis",
+            "0",
+            "--light-sheet-angle",
+            "45.0",
+        ]
+
+        cases = (
+            (
+                cli.estimate_psf_main,
+                [
+                    "--image-path",
+                    "volume.tif",
+                    "--output-path",
+                    "estimated_psf.tif",
+                ]
+                + common_argv,
+                (
+                    ("estimate_psf_from_chunks", {"return_value": seed}),
+                    ("imwrite", {}),
+                ),
+            ),
+            (
+                cli.deconvolve_main,
+                [
+                    "--image-path",
+                    "volume.tif",
+                    "--output-path",
+                    "restored.tif",
+                ]
+                + common_argv,
+                (
+                    ("imread", {"return_value": image}),
+                    ("deconvolve_with_cupy", {"return_value": image}),
+                    ("imwrite", {}),
+                ),
+            ),
+        )
+
+        for entry_point, argv, extra_mocks in cases:
+            with self.subTest(entry_point=entry_point.__name__):
+                with contextlib.ExitStack() as stack:
+                    generate = stack.enter_context(
+                        mock.patch.object(cli, "generate_psf_seed", return_value=seed)
+                    )
+                    for name, patch_kwargs in extra_mocks:
+                        stack.enter_context(mock.patch.object(cli, name, **patch_kwargs))
+                    entry_point(argv)
+
+                kwargs = generate.call_args.kwargs
+                self.assertEqual(kwargs["psf_mode"], "aslm")
+                self.assertEqual(kwargs["slit_width_px"], 4)
+                self.assertIsInstance(kwargs["slit_width_px"], int)
+                self.assertIsNone(kwargs["slit_width"])
+                self.assertEqual(kwargs["slit_axis"], 0)
+                self.assertIsInstance(kwargs["slit_axis"], int)
+                self.assertEqual(kwargs["light_sheet_angle"], 45.0)
+                self.assertIsInstance(kwargs["light_sheet_angle"], float)
+
+    def test_both_cli_parsers_carry_the_locked_aslm_defaults(self):
+        from tiresias import cli
+
+        minimal_argv = ["--image-path", "volume.tif", "--output-path", "out.tif"]
+
+        for parser_name, build_parser in (
+            ("estimate", cli.build_estimate_psf_parser),
+            ("deconvolve", cli.build_deconvolve_parser),
+        ):
+            with self.subTest(parser=parser_name):
+                args = build_parser().parse_args(minimal_argv)
+                self.assertEqual(args.psf_mode, "single")
+                self.assertEqual(args.light_sheet_angle, 90.0)
+                self.assertIsNone(args.slit_width)
+                self.assertIsNone(args.slit_width_px)
+                self.assertIsNone(args.slit_axis)
+
 
 if __name__ == "__main__":
     unittest.main()
