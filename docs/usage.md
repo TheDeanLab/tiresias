@@ -391,6 +391,15 @@ print(np.array_equal(seed_px, seed_physical))
 # True
 ```
 
+The ASLM slit gate is a fixed spatial taper, not a time-resolved acquisition
+simulation. The rolling shutter is assumed to be perfectly synchronized with
+the swept beam waist, so the illuminated slit always sits exactly at the
+waist. There is no basis in this codebase for a credible timing-error
+distribution, so encoding one would mean inventing numbers rather than
+modeling physics. Timing jitter, shutter/beam desynchronization, and
+sweep-velocity error are therefore not modeled and are explicitly out of
+scope for this milestone.
+
 ## Performance Notes
 
 - Tiresias clamps blind PSF estimation to one CuPy tile worker. This avoids
