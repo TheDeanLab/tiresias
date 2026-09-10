@@ -391,6 +391,59 @@ print(np.array_equal(seed_px, seed_physical))
 # True
 ```
 
+At the wide end of the `slit_width` range, `aslm` reduces exactly to
+`light_sheet`. Once `slit_width` reaches or exceeds the full extent of the
+gated axis, the Gaussian taper described above is skipped entirely rather than
+merely widened, so `aslm` output is bit-identical to the equivalent
+`light_sheet` output, not just numerically close. Compute that full extent for
+your own parameters from the gated axis's sample count times its pixel
+spacing: `psf_size_xy * dxy` when the gate axis is 2 (X), or `psf_size_z * dz`
+when it is 0 (Z). This is a useful sanity check that your ASLM parameters are
+wired correctly, and it means `aslm` degrades gracefully into the mode you
+already know at wide slit widths rather than failing or producing something
+you cannot reason about.
+
+```python
+import numpy as np
+
+from tiresias import generate_psf_seed
+
+common = dict(
+    na=1.0,
+    detection_na=1.0,
+    illumination_na=0.2,
+    wavelength=0.561,
+    ni=1.33,
+    ns=1.33,
+    ni0=None,
+    tg=None,
+    tg0=None,
+    ng=None,
+    ng0=None,
+    ti0=None,
+    oversample_factor=3,
+    psf_model="vectorial",
+    dxy=0.108,
+    dz=0.300,
+    psf_size_z=61,
+    psf_size_xy=128,
+    background=0.0,
+    light_sheet_angle=90.0,
+)
+
+# light_sheet_angle=90.0 gates axis 2 (X), whose full extent is
+# psf_size_xy * dxy.
+full_extent = 128 * 0.108
+
+seed_light_sheet = generate_psf_seed(psf_mode="light_sheet", **common)
+seed_aslm_full_width = generate_psf_seed(
+    psf_mode="aslm", slit_width=full_extent, **common
+)
+
+print(np.array_equal(seed_light_sheet, seed_aslm_full_width))
+# True
+```
+
 The ASLM slit gate is a fixed spatial taper, not a time-resolved acquisition
 simulation. The rolling shutter is assumed to be perfectly synchronized with
 the swept beam waist, so the illuminated slit always sits exactly at the
