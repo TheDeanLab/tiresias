@@ -189,8 +189,10 @@ estimated_psf = estimate_blind_psf_scipy(observed, initial_psf, n_iters=4)
 
 ## PSF Seed Modes
 
-The CLI currently generates a single-detection theoretical PSF seed. The Python
-API also exposes `generate_psf_seed()` for light-sheet seed construction:
+`generate_psf_seed()` builds the theoretical seed for all three modes —
+`single`, `light_sheet`, and `aslm`. Both `tiresias-estimate-psf` and
+`tiresias-deconvolve` route their theoretical seed generation through this same
+function, selected by `--psf-mode`.
 
 ```python
 from tiresias import generate_psf_seed
@@ -220,9 +222,42 @@ seed = generate_psf_seed(
 )
 ```
 
+```python
+from tiresias import generate_psf_seed
+
+seed = generate_psf_seed(
+    psf_mode="aslm",
+    na=1.0,
+    detection_na=1.0,
+    illumination_na=0.2,
+    wavelength=0.561,
+    ni=1.33,
+    ns=1.33,
+    ni0=None,
+    tg=None,
+    tg0=None,
+    ng=None,
+    ng0=None,
+    ti0=None,
+    oversample_factor=3,
+    psf_model="vectorial",
+    dxy=0.108,
+    dz=0.300,
+    psf_size_z=61,
+    psf_size_xy=128,
+    background=0.0,
+    light_sheet_angle=90.0,
+    slit_width=2.0,
+)
+```
+
 `psf_mode="single"` returns the detection seed. `psf_mode="light_sheet"`
 multiplies the detection seed by a rotated illumination seed and normalizes the
-result.
+result. `psf_mode="aslm"` builds the same detection-times-rotated-illumination
+product as `light_sheet`, but first multiplies the illumination PSF, in its
+pre-rotation frame, by a narrow Gaussian slit gate — modeling the rolling
+shutter that follows the swept beam waist, assumed perfectly synchronized to
+it.
 
 ## Performance Notes
 
