@@ -16,7 +16,7 @@ class CliTests(unittest.TestCase):
 
         with (
             mock.patch.object(cli, "load_psf_seed", return_value=seed) as load_seed,
-            mock.patch.object(cli, "generate_theoretical_psf") as generate,
+            mock.patch.object(cli, "generate_psf_seed") as generate,
             mock.patch.object(cli, "estimate_psf_from_chunks", return_value=seed) as estimate,
             mock.patch.object(cli, "imwrite"),
         ):
@@ -46,7 +46,7 @@ class CliTests(unittest.TestCase):
         estimated = np.ones((3, 3, 3), dtype=np.float32) / 27.0
 
         with (
-            mock.patch.object(cli, "generate_theoretical_psf", return_value=seed) as generate,
+            mock.patch.object(cli, "generate_psf_seed", return_value=seed) as generate,
             mock.patch.object(cli, "estimate_psf_from_chunks", return_value=estimated) as estimate,
             mock.patch.object(cli, "imwrite") as imwrite,
         ):
@@ -85,7 +85,7 @@ class CliTests(unittest.TestCase):
         seed = np.ones((3, 3, 3), dtype=np.float32) / 27.0
 
         with (
-            mock.patch.object(cli, "generate_theoretical_psf", return_value=seed),
+            mock.patch.object(cli, "generate_psf_seed", return_value=seed),
             mock.patch.object(cli, "estimate_psf_from_chunks", return_value=seed) as estimate,
             mock.patch.object(cli, "imwrite"),
         ):
@@ -119,6 +119,185 @@ class CliTests(unittest.TestCase):
         self.assertEqual(estimate.call_args.kwargs["cupy_fft_engine"], "scout")
         self.assertEqual(estimate.call_args.kwargs["adaptive_scout_iters"], 2)
         self.assertEqual(estimate.call_args.kwargs["adaptive_keep_tiles"], 6)
+
+    def test_estimate_psf_cli_aslm_mode_generates_gated_seed_end_to_end(self):
+        from tiresias import cli
+
+        def _capture_seed(*, psf_seed, **kwargs):
+            del kwargs
+            return psf_seed
+
+        common_argv = [
+            "--image-path",
+            "volume.tif",
+            "--output-path",
+            "estimated_psf.tif",
+            "--detection-na",
+            "1.0",
+            "--illumination-na",
+            "0.2",
+            "--wavelength",
+            "0.561",
+            "--ni",
+            "1.33",
+            "--ns",
+            "1.33",
+            "--dxy",
+            "0.108",
+            "--dz",
+            "0.3",
+            "--oversample-factor",
+            "1",
+            "--psf-size-z",
+            "15",
+            "--psf-size-xy",
+            "15",
+        ]
+
+        seeds = {}
+        with mock.patch.object(cli, "imwrite"):
+            for mode_args, key in (
+                (["--psf-mode", "light_sheet"], "light_sheet"),
+                (["--psf-mode", "aslm", "--slit-width", "0.4"], "aslm"),
+            ):
+                with mock.patch.object(
+                    cli, "estimate_psf_from_chunks", side_effect=_capture_seed
+                ) as estimate:
+                    cli.estimate_psf_main(common_argv + mode_args)
+                    seeds[key] = estimate.call_args.kwargs["psf_seed"]
+
+        light_sheet = seeds["light_sheet"]
+        aslm = seeds["aslm"]
+
+        self.assertEqual(aslm.shape, (15, 15, 15))
+        self.assertEqual(aslm.dtype, np.float32)
+        self.assertAlmostEqual(float(aslm.sum(dtype=np.float64)), 1.0, delta=1e-5)
+        self.assertFalse(np.allclose(aslm, light_sheet))
+
+        def _axis0_variance(psf):
+            marginal = psf.sum(axis=(1, 2), dtype=np.float64)
+            idx = np.arange(psf.shape[0], dtype=np.float64)
+            centroid = float((marginal * idx).sum() / marginal.sum())
+            return float((marginal * (idx - centroid) ** 2).sum() / marginal.sum())
+
+        self.assertLess(_axis0_variance(aslm), _axis0_variance(light_sheet))
+
+    def test_estimate_psf_cli_passes_aslm_flags_through_to_generate_psf_seed(self):
+        from tiresias import cli
+
+        seed = np.ones((3, 3, 3), dtype=np.float32) / 27.0
+
+        with (
+            mock.patch.object(cli, "generate_psf_seed", return_value=seed) as generate,
+            mock.patch.object(cli, "estimate_psf_from_chunks", return_value=seed),
+            mock.patch.object(cli, "imwrite"),
+        ):
+            cli.estimate_psf_main(
+                [
+                    "--image-path",
+                    "volume.tif",
+                    "--output-path",
+                    "estimated_psf.tif",
+                    "--dxy",
+                    "0.108",
+                    "--dz",
+                    "0.3",
+                    "--wavelength",
+                    "0.561",
+                    "--detection-na",
+                    "1.0",
+                    "--ni",
+                    "1.33",
+                    "--ns",
+                    "1.33",
+                    "--psf-mode",
+                    "aslm",
+                    "--slit-width-px",
+                    "4",
+                    "--slit-axis",
+                    "2",
+                    "--light-sheet-angle",
+                    "75.0",
+                ]
+            )
+
+        self.assertEqual(generate.call_args.kwargs["psf_mode"], "aslm")
+        self.assertEqual(generate.call_args.kwargs["slit_width_px"], 4)
+        self.assertIsNone(generate.call_args.kwargs["slit_width"])
+        self.assertEqual(generate.call_args.kwargs["slit_axis"], 2)
+        self.assertEqual(generate.call_args.kwargs["light_sheet_angle"], 75.0)
+
+    def test_estimate_psf_cli_defaults_preserve_single_mode_parameters(self):
+        from tiresias import cli
+
+        seed = np.ones((3, 3, 3), dtype=np.float32) / 27.0
+
+        with (
+            mock.patch.object(cli, "generate_psf_seed", return_value=seed) as generate,
+            mock.patch.object(cli, "estimate_psf_from_chunks", return_value=seed),
+            mock.patch.object(cli, "imwrite"),
+        ):
+            cli.estimate_psf_main(
+                [
+                    "--image-path",
+                    "volume.tif",
+                    "--output-path",
+                    "estimated_psf.tif",
+                    "--dxy",
+                    "0.108",
+                    "--dz",
+                    "0.3",
+                    "--wavelength",
+                    "0.561",
+                    "--detection-na",
+                    "1.0",
+                    "--ni",
+                    "1.33",
+                    "--ns",
+                    "1.33",
+                ]
+            )
+
+        self.assertEqual(generate.call_args.kwargs["psf_mode"], "single")
+        self.assertEqual(generate.call_args.kwargs["light_sheet_angle"], 90.0)
+        self.assertIsNone(generate.call_args.kwargs["slit_width"])
+        self.assertIsNone(generate.call_args.kwargs["slit_width_px"])
+        self.assertIsNone(generate.call_args.kwargs["slit_axis"])
+
+        with (
+            mock.patch.object(cli, "generate_psf_seed", return_value=seed) as generate,
+            mock.patch.object(cli, "estimate_psf_from_chunks", return_value=seed),
+            mock.patch.object(cli, "imwrite"),
+        ):
+            cli.estimate_psf_main(
+                [
+                    "--image-path",
+                    "volume.tif",
+                    "--output-path",
+                    "estimated_psf.tif",
+                    "--camera-pixel-size",
+                    "6.5",
+                    "--magnification",
+                    "60",
+                    "--dz",
+                    "0.3",
+                    "--wavelength",
+                    "0.561",
+                    "--detection-na",
+                    "1.0",
+                    "--ni",
+                    "1.33",
+                    "--ns",
+                    "1.33",
+                ]
+            )
+
+        self.assertEqual(generate.call_args.kwargs["dxy"], 6.5 / 60)
+
+    def test_cli_module_exposes_no_direct_theoretical_psf_bypass(self):
+        from tiresias import cli
+
+        self.assertFalse(hasattr(cli, "generate_theoretical_psf"))
 
     def test_deconvolve_cli_reads_inputs_and_writes_restored_tiff(self):
         from tiresias import cli
