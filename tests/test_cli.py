@@ -7,6 +7,29 @@ from unittest import mock
 
 import numpy as np
 
+# Shared by both fail-before-compute matrix tests (estimate + deconvolve) so the
+# two commands cannot silently drift apart on which shapes are covered or what
+# message fragment each is expected to raise.
+_ASLM_INVALID_SLIT_CASES = (
+    (["--psf-mode", "aslm", "--slit-width", "-0.4"], "slit_width must be > 0"),
+    (["--psf-mode", "aslm"], "Exactly one of slit_width or slit_width_px"),
+    (
+        ["--psf-mode", "aslm", "--slit-width", "0.4", "--slit-width-px", "4"],
+        "Exactly one of slit_width or slit_width_px",
+    ),
+    (
+        ["--psf-mode", "aslm", "--slit-width", "0.4", "--slit-axis", "1"],
+        "slit_axis must be 0 or 2",
+    ),
+    (
+        # Even --psf-size-xy is required: _gaussian_slit_window centres the Gaussian
+        # at (size - 1) / 2, which only lands off-sample for an even size. See this
+        # plan's interface_context for the measured odd-vs-even behavior.
+        ["--psf-mode", "aslm", "--psf-size-xy", "16", "--slit-width", "0.0001"],
+        "too narrow to capture positive illumination energy",
+    ),
+)
+
 
 class CliTests(unittest.TestCase):
     def test_estimate_psf_cli_loads_calibrated_seed_without_optical_arguments(self):
@@ -526,6 +549,108 @@ class CliTests(unittest.TestCase):
                 self.assertTrue(hasattr(deconvolve_ns, attr))
                 self.assertEqual(getattr(estimate_ns, attr), getattr(deconvolve_ns, attr))
 
+    def test_estimate_psf_cli_invalid_slit_arguments_fail_before_any_compute(self):
+        from tiresias import cli
+
+        base_argv = [
+            "--image-path",
+            "volume.tif",
+            "--output-path",
+            "estimated_psf.tif",
+            "--detection-na",
+            "1.0",
+            "--illumination-na",
+            "0.2",
+            "--wavelength",
+            "0.561",
+            "--ni",
+            "1.33",
+            "--ns",
+            "1.33",
+            "--dxy",
+            "0.108",
+            "--dz",
+            "0.3",
+            "--oversample-factor",
+            "1",
+            "--psf-size-z",
+            "15",
+            "--psf-size-xy",
+            "15",
+        ]
+
+        for suffix, fragment in _ASLM_INVALID_SLIT_CASES:
+            with self.subTest(flags=" ".join(suffix)):
+                with (
+                    mock.patch.object(cli, "estimate_psf_from_chunks") as estimate,
+                    mock.patch.object(cli, "imwrite") as imwrite,
+                ):
+                    with self.assertRaises(ValueError) as cm:
+                        cli.estimate_psf_main(base_argv + suffix)
+                    self.assertIn(fragment, str(cm.exception))
+                    estimate.assert_not_called()
+                    imwrite.assert_not_called()
+
+        # An unsupported --psf-mode value is rejected by argparse's choices= at the
+        # parse boundary, before estimate_psf_main's body ever runs — a different
+        # and earlier guarantee than the ValueError propagation above.
+        with self.subTest(flags="--psf-mode not_a_mode"):
+            with (
+                mock.patch.object(cli, "estimate_psf_from_chunks") as estimate,
+                mock.patch.object(cli, "imwrite") as imwrite,
+            ):
+                with self.assertRaises(SystemExit) as cm:
+                    cli.estimate_psf_main(base_argv + ["--psf-mode", "not_a_mode"])
+                self.assertEqual(cm.exception.code, 2)
+                estimate.assert_not_called()
+                imwrite.assert_not_called()
+
+    def test_deconvolve_cli_invalid_slit_arguments_fail_before_any_compute(self):
+        from tiresias import cli
+
+        image = np.ones((3, 5, 5), dtype=np.float32)
+
+        base_argv = [
+            "--image-path",
+            "volume.tif",
+            "--output-path",
+            "restored.tif",
+            "--detection-na",
+            "1.0",
+            "--illumination-na",
+            "0.2",
+            "--wavelength",
+            "0.561",
+            "--ni",
+            "1.33",
+            "--ns",
+            "1.33",
+            "--dxy",
+            "0.108",
+            "--dz",
+            "0.3",
+            "--oversample-factor",
+            "1",
+            "--psf-size-z",
+            "15",
+            "--psf-size-xy",
+            "15",
+        ]
+
+        for suffix, fragment in _ASLM_INVALID_SLIT_CASES:
+            with self.subTest(flags=" ".join(suffix)):
+                with (
+                    mock.patch.object(cli, "imread", return_value=image),
+                    mock.patch.object(cli, "deconvolve_with_cupy") as deconvolve,
+                    mock.patch.object(cli, "imwrite") as imwrite,
+                ):
+                    with self.assertRaises(ValueError) as cm:
+                        cli.deconvolve_main(base_argv + suffix)
+                    self.assertIn(fragment, str(cm.exception))
+                    deconvolve.assert_not_called()
+                    imwrite.assert_not_called()
+                    # `imread` legitimately runs once before PSF acquisition on this
+                    # command (plan 02-02's recorded ordering) — not asserted here.
 
 if __name__ == "__main__":
     unittest.main()
