@@ -127,38 +127,69 @@ def axial_fwhm(psf: np.ndarray, dz: float) -> float | None:
     return (right_crossing - left_crossing) * dz
 
 
-def run_sweep() -> list[tuple[float, float | None]]:
-    """Generate an aslm seed for each declared slit_width and measure its axial FWHM.
+def run_sweep(widths: tuple[float, ...] = SLIT_WIDTHS) -> list[tuple[float, float | None]]:
+    """Generate an aslm seed for each requested slit_width and measure its axial FWHM.
 
-    Iterates SLIT_WIDTHS in declared order and calls generate_psf_seed for
-    every point -- no local re-implementation of PSF generation, rotation, or
-    slit gating. The declared sequence is the presentation order: this
-    function is the single ordered source both print_table and
-    build_sweep_figure consume, so neither re-derives or re-sorts it.
+    Iterates `widths` (defaulting to the committed SLIT_WIDTHS) in the given
+    order and calls generate_psf_seed for every point -- no local
+    re-implementation of PSF generation, rotation, or slit gating. The
+    requested sequence is the presentation order: this function is the
+    single ordered source both print_table and build_sweep_figure consume,
+    so neither re-derives or re-sorts it.
+
+    A slit_width the library rejects (ASLM-06: non-positive, or too narrow to
+    capture positive illumination energy) raises ValueError from
+    generate_psf_seed. That is caught here specifically -- not via a bare
+    except, since ValueError is the library's own contract for exactly those
+    two cases and anything broader would hide a real defect -- the point is
+    recorded as None and the sweep continues with the remaining points. A
+    point whose axial_fwhm comes back None (the profile never dropped to half
+    maximum inside the volume) is likewise recorded as None. Either way the
+    point keeps its ordered slot in the returned list -- it is never dropped.
     """
     results: list[tuple[float, float | None]] = []
-    for width in SLIT_WIDTHS:
-        seed = generate_psf_seed(psf_mode="aslm", slit_width=width, **COMMON)
+    for width in widths:
+        try:
+            seed = generate_psf_seed(psf_mode="aslm", slit_width=width, **COMMON)
+        except ValueError as exc:
+            print(f"skipped slit_width={width!r}: rejected by generate_psf_seed: {exc}")
+            results.append((width, None))
+            continue
         fwhm = axial_fwhm(seed, COMMON["dz"])
+        if fwhm is None:
+            print(
+                f"skipped slit_width={width!r}: axial_fwhm could not be measured "
+                "(the profile never dropped to half maximum within the volume)"
+            )
         results.append((width, fwhm))
     return results
 
 
 def print_table(results: list[tuple[float, float | None]], reference_fwhm: float) -> None:
-    """Print the D-06 slit_width/FWHM table, in the same ascending order as SLIT_WIDTHS.
+    """Print the D-06 slit_width/FWHM table, in the same order run_sweep() returned.
 
-    The declared SLIT_WIDTHS sequence is the presentation order (the ordering
-    contract): rows are printed exactly as run_sweep() returns them, with no
-    sorting step that could reorder equal or near-equal points or introduce
-    duplicates. The final row -- always the FULL_EXTENT point -- is marked as
-    the ASLM-05 full-extent / light_sheet-equivalent anchor.
+    Rows are printed exactly as run_sweep() returns them, with no sorting
+    step that could reorder equal or near-equal points or introduce
+    duplicates. A None entry -- a rejected slit_width or an unmeasurable FWHM
+    -- renders as an explicit "SKIPPED" marker, never as a number and never
+    omitted; the run_sweep() log above already named the offending width and
+    reproduced the library's own reason. An empty result list still prints
+    the header and reference line rather than raising -- there is no row
+    index to look up on an empty sequence.
     """
     print(f"{'slit_width (um)':>16}  {'axial FWHM (um)':>16}  note")
-    last_index = len(results) - 1
-    for index, (width, fwhm) in enumerate(results):
-        fwhm_str = f"{fwhm:>16.4f}" if fwhm is not None else f"{'n/a':>16}"
-        note = "<- full-extent / light_sheet-equivalent anchor" if index == last_index else ""
-        print(f"{width:>16.4f}  {fwhm_str}  {note}")
+    if not results:
+        print("  (no sweep points -- every requested slit_width was skipped; see log above)")
+    else:
+        last_index = len(results) - 1
+        for index, (width, fwhm) in enumerate(results):
+            if fwhm is None:
+                fwhm_str = f"{'SKIPPED':>16}"
+                note = "<- skipped: rejected slit_width or unmeasurable FWHM, see log above"
+            else:
+                fwhm_str = f"{fwhm:>16.4f}"
+                note = "<- full-extent / light_sheet-equivalent anchor" if index == last_index else ""
+            print(f"{width:>16.4f}  {fwhm_str}  {note}")
     print(
         f"{'light_sheet reference':>16}  {reference_fwhm:>16.4f}  "
         "(plain light_sheet, no slit gate)"
@@ -167,16 +198,26 @@ def print_table(results: list[tuple[float, float | None]], reference_fwhm: float
 
 def build_sweep_figure(
     results: list[tuple[float, float | None]], reference_fwhm: float
-) -> plt.Figure:
+) -> plt.Figure | None:
     """Plot measured axial FWHM against slit_width, with a light_sheet reference line.
 
+    Only measured (non-None) points are plotted -- a skipped point is never
+    rendered as data. Returns None, rather than raising from unpacking an
+    empty sequence, when no point in `results` was measurable; the caller
+    must handle that return instead of assuming a Figure.
+
     Title and narrative are derived from what this run actually produced --
-    the tradeoff direction is read off the computed first/last FWHM values,
-    never asserted from a prior expectation (see this plan's
+    the tradeoff direction is read off the computed first/last measured FWHM
+    values, never asserted from a prior expectation (see this plan's
     must_haves.prohibitions).
     """
-    widths = [width for width, _ in results]
-    fwhms = [fwhm for _, fwhm in results]
+    measured = [(width, fwhm) for width, fwhm in results if fwhm is not None]
+    if not measured:
+        print("no sweep point produced a measurable FWHM -- skipping figure")
+        return None
+
+    widths = [width for width, _ in measured]
+    fwhms = [fwhm for _, fwhm in measured]
 
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.plot(widths, fwhms, marker="o", linestyle="-", label="measured axial FWHM")
@@ -218,6 +259,15 @@ def main() -> None:
     results = run_sweep()
     print_table(results, reference_fwhm)
 
+    if all(fwhm is None for _, fwhm in results):
+        # Degenerate-sweep guard: every point was rejected or unmeasurable.
+        # There is no anchor to check and nothing to plot, so report that
+        # plainly and exit non-zero rather than raising from an empty
+        # unpack further down -- a sweep that measured nothing has not done
+        # the job this script exists to do.
+        print("no sweep point produced a measurable FWHM -- nothing to plot or save")
+        raise SystemExit(1)
+
     # ASLM-05 anchor check: at slit_width == FULL_EXTENT the gate is skipped
     # entirely (seeds.py::_gaussian_slit_window returns None), so the aslm
     # seed is bit-identical to the light_sheet seed and their FWHMs must be
@@ -226,7 +276,12 @@ def main() -> None:
     # mismatch: it prints the discrepancy and continues so the reader still
     # gets the table and plot.
     _anchor_width, anchor_fwhm = results[-1]
-    if anchor_fwhm == reference_fwhm:
+    if anchor_fwhm is None:
+        print(
+            "anchor check skipped: the full-extent slit_width point itself "
+            "was skipped, see log above -- no aslm FWHM to compare"
+        )
+    elif anchor_fwhm == reference_fwhm:
         print(
             f"anchor check: full-extent aslm FWHM ({anchor_fwhm:.4f} um) "
             f"matches light_sheet reference ({reference_fwhm:.4f} um) -- exact match"
@@ -238,6 +293,13 @@ def main() -> None:
         )
 
     fig = build_sweep_figure(results, reference_fwhm)
+    if fig is None:
+        # Unreachable given the all-None guard above (at least one point is
+        # measurable at this point), but never assume a Figure without
+        # checking -- build_sweep_figure's contract is to return None when
+        # nothing was measurable.
+        print("no sweep point produced a measurable FWHM -- nothing to plot or save")
+        raise SystemExit(1)
     output_dir = Path(__file__).resolve().parent / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "slit_width_sweep.png"
