@@ -145,11 +145,20 @@ def run_sweep() -> list[tuple[float, float | None]]:
 
 
 def print_table(results: list[tuple[float, float | None]], reference_fwhm: float) -> None:
-    """Print the D-06 slit_width/FWHM table, in the same ascending order as SLIT_WIDTHS."""
-    print(f"{'slit_width (um)':>16}  {'axial FWHM (um)':>16}")
-    for width, fwhm in results:
+    """Print the D-06 slit_width/FWHM table, in the same ascending order as SLIT_WIDTHS.
+
+    The declared SLIT_WIDTHS sequence is the presentation order (the ordering
+    contract): rows are printed exactly as run_sweep() returns them, with no
+    sorting step that could reorder equal or near-equal points or introduce
+    duplicates. The final row -- always the FULL_EXTENT point -- is marked as
+    the ASLM-05 full-extent / light_sheet-equivalent anchor.
+    """
+    print(f"{'slit_width (um)':>16}  {'axial FWHM (um)':>16}  note")
+    last_index = len(results) - 1
+    for index, (width, fwhm) in enumerate(results):
         fwhm_str = f"{fwhm:>16.4f}" if fwhm is not None else f"{'n/a':>16}"
-        print(f"{width:>16.4f}  {fwhm_str}")
+        note = "<- full-extent / light_sheet-equivalent anchor" if index == last_index else ""
+        print(f"{width:>16.4f}  {fwhm_str}  {note}")
     print(
         f"{'light_sheet reference':>16}  {reference_fwhm:>16.4f}  "
         "(plain light_sheet, no slit gate)"
@@ -208,6 +217,25 @@ def main() -> None:
 
     results = run_sweep()
     print_table(results, reference_fwhm)
+
+    # ASLM-05 anchor check: at slit_width == FULL_EXTENT the gate is skipped
+    # entirely (seeds.py::_gaussian_slit_window returns None), so the aslm
+    # seed is bit-identical to the light_sheet seed and their FWHMs must be
+    # exactly equal -- not merely close. An approximate comparison here would
+    # hide a real regression in the gate-skip path, so this never raises on
+    # mismatch: it prints the discrepancy and continues so the reader still
+    # gets the table and plot.
+    _anchor_width, anchor_fwhm = results[-1]
+    if anchor_fwhm == reference_fwhm:
+        print(
+            f"anchor check: full-extent aslm FWHM ({anchor_fwhm:.4f} um) "
+            f"matches light_sheet reference ({reference_fwhm:.4f} um) -- exact match"
+        )
+    else:
+        print(
+            f"anchor check: full-extent aslm FWHM ({anchor_fwhm!r} um) "
+            f"does NOT match light_sheet reference ({reference_fwhm!r} um) -- mismatch"
+        )
 
     fig = build_sweep_figure(results, reference_fwhm)
     output_dir = Path(__file__).resolve().parent / "output"
