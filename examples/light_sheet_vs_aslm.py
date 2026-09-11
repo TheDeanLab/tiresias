@@ -117,13 +117,23 @@ def main() -> None:
     # panels, is what actually makes the narrower aslm extent visible.
     log_norm = LogNorm(vmin=vmax * 1e-3, vmax=vmax)
 
+    # Physical-unit axes: a bare pixel-index plot would misrepresent this
+    # configuration's anisotropic voxel (dz=0.300 vs dxy=0.108) by ~2.8x.
+    dz = COMMON["dz"]
+    dxy = COMMON["dxy"]
+    z_extent_um = seed_light_sheet.shape[0] * dz
+    x_extent_um = seed_light_sheet.shape[2] * dxy
+    extent = (0.0, x_extent_um, z_extent_um, 0.0)  # left, right, bottom, top
+
     fig, axes = plt.subplots(1, 2, figsize=(10, 5), sharey=True)
     for ax, panel, title in (
         (axes[0], xz_light_sheet, "light_sheet"),
         (axes[1], xz_aslm, "aslm"),
     ):
-        ax.imshow(panel, aspect="auto", norm=log_norm)
+        ax.imshow(panel, aspect="auto", norm=log_norm, extent=extent)
         ax.set_title(title)
+        ax.set_xlabel("X (um)")
+        ax.set_ylabel("Z (um)")
     fig.tight_layout()
 
     output_dir = Path(__file__).resolve().parent / "output"
