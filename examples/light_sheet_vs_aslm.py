@@ -87,6 +87,18 @@ def summarise_mode(label: str, seed: np.ndarray, gate: str) -> None:
     print(f"{label} shape={seed.shape} energy={energy:.6f} gate={gate}")
 
 
+def axial_profile(seed: np.ndarray) -> np.ndarray:
+    """Return the Z intensity profile of a (Z, Y, X) seed through its true peak.
+
+    Locates the global peak with `np.unravel_index(np.argmax(seed), seed.shape)`
+    rather than `shape // 2` -- for the D-07 parameters the true peak sits at
+    (Y, X) = (63, 63), not the geometric centre (64, 64), and the peak Z index
+    itself migrates with `slit_width` (see RESEARCH.md Common Pitfalls #3).
+    """
+    peak_z, peak_y, peak_x = np.unravel_index(np.argmax(seed), seed.shape)
+    return seed[:, peak_y, peak_x].astype(np.float64)
+
+
 def build_comparison_figure(
     seed_light_sheet: np.ndarray,
     seed_aslm: np.ndarray,
@@ -135,7 +147,16 @@ def build_comparison_figure(
 
     # constrained_layout (not tight_layout): tight_layout does not account for
     # the per-row colorbars added below and produces overlapping panels/text.
-    fig, axes = plt.subplots(2, 2, figsize=(11, 10), constrained_layout=True)
+    # 3-row gridspec: rows 0-1 are the 2x2 MIP grid, row 2 spans both columns
+    # for the axial intensity-profile overlay added below.
+    fig = plt.figure(figsize=(11, 14), constrained_layout=True)
+    gs = fig.add_gridspec(3, 2, height_ratios=[1, 1, 0.8])
+    axes = np.array(
+        [
+            [fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1])],
+            [fig.add_subplot(gs[1, 0]), fig.add_subplot(gs[1, 1])],
+        ]
+    )
 
     row_specs = (
         (axes[0, 0], axes[0, 1], xz_light_sheet, xz_aslm, xz_extent, xz_norm, "XZ", "X"),
@@ -176,6 +197,50 @@ def build_comparison_figure(
             ha="left",
             va="bottom",
         )
+
+    # Axial intensity-profile overlay: makes the gate's effect readable
+    # without the reader computing anything (D-04 <specifics>). Z coordinate
+    # centered on zero via pixel centers, the same "centered on zero"
+    # convention the projection panels above use for their extent.
+    profile_light_sheet = axial_profile(seed_light_sheet)
+    profile_aslm = axial_profile(seed_aslm)
+    z_um = -z_extent_um / 2 + (np.arange(psf_size_z) + 0.5) * dz
+
+    ax_profile = fig.add_subplot(gs[2, :])
+    # Each curve normalised to its own peak -- the plot compares *shape*, not
+    # the energy redistribution the gate causes, so say so in the axis label
+    # rather than presenting these as raw normalised intensities.
+    ax_profile.plot(
+        z_um,
+        profile_light_sheet / profile_light_sheet.max(),
+        marker="o",
+        markersize=3,
+        label="light_sheet",
+    )
+    ax_profile.plot(
+        z_um,
+        profile_aslm / profile_aslm.max(),
+        marker="o",
+        markersize=3,
+        label=f"aslm (slit_width={slit_width:.2f} um)",
+    )
+    ax_profile.axhline(0.5, color="gray", linestyle="--", linewidth=1.0)
+    ax_profile.set_xlabel("Z (um)")
+    ax_profile.set_ylabel("intensity, each curve peak-normalised to 1.0")
+    ax_profile.set_title("Axial (Z) intensity profile through each seed's true peak")
+    # Zoom to where the curves actually carry visible structure -- the full
+    # +-9.15 um volume extent (matching the projection panels above) squeezes
+    # the half-max crossing separation the reader needs to see into a few
+    # pixels of screen space. Bound derived from where either curve clears 2%
+    # of its own peak, plus a fixed margin, rather than a hardcoded window.
+    visible = (
+        (profile_light_sheet / profile_light_sheet.max() >= 0.02)
+        | (profile_aslm / profile_aslm.max() >= 0.02)
+    )
+    visible_z = z_um[visible]
+    margin = 2.0 * dz
+    ax_profile.set_xlim(visible_z.min() - margin, visible_z.max() + margin)
+    ax_profile.legend()
 
     fig.suptitle(
         f"light_sheet vs aslm PSF seed comparison (aslm slit_width={slit_width:.2f} um)"
