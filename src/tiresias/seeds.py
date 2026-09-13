@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import math
 from pathlib import Path
 
 import numpy as np
@@ -169,6 +170,91 @@ def rotate_illumination_psf(illumination: np.ndarray, angle: float) -> np.ndarra
     )
 
 
+def _resolve_slit_axis(light_sheet_angle: float, slit_axis: int | None = None) -> int:
+    """Resolve which pre-rotation illumination axis the slit gate narrows."""
+    # D-03: an explicit override bypasses auto-detection entirely. Axis 1 (Y) is
+    # deliberately rejected: rotate_illumination_psf only rotates the Z/X plane
+    # (axes=(0, 2)), so axis 1 is never touched by rotation and gating it would
+    # not correspond to any rolling-shutter direction.
+    if slit_axis is not None:
+        if slit_axis not in (0, 2):
+            raise ValueError(f"slit_axis must be 0 or 2, got {slit_axis!r}")
+        return slit_axis
+    # D-01: unconditional round-to-nearest-quadrant, deliberately unlike
+    # rotate_illumination_psf's RIGHT_ANGLE_TOLERANCE-gated fast path. Python's
+    # round-half-to-even applies at exact tie angles (e.g. 45.0, 135.0); plan
+    # 01-03 pins that contract with a dedicated test.
+    quadrant = int(round(light_sheet_angle / 90.0)) % 4
+    return 0 if quadrant % 2 == 0 else 2
+
+
+def _resolve_slit_fwhm(
+    slit_width: float | None, slit_width_px: int | None, dxy: float
+) -> float:
+    """Resolve the ASLM slit gate's FWHM in physical units from whichever form was supplied."""
+    provided = [value for value in (slit_width, slit_width_px) if value is not None]
+    if len(provided) != 1:
+        raise ValueError(
+            "Exactly one of slit_width or slit_width_px must be provided for psf_mode='aslm'"
+        )
+    if slit_width is not None:
+        if slit_width <= 0:
+            raise ValueError(f"slit_width must be > 0, got {slit_width!r}")
+        return slit_width
+    if slit_width_px <= 0:
+        raise ValueError(f"slit_width_px must be > 0, got {slit_width_px!r}")
+    # D-09: this conversion always uses dxy, even when the resolved gate axis is
+    # 0 (Z, spaced by dz) — deliberate per locked decision D-09, not an
+    # oversight. test_aslm_slit_width_px_converts_via_dxy_even_on_the_z_axis
+    # (plan 01-04) pins this so it goes red if someone "fixes" it later.
+    return slit_width_px * dxy
+
+
+def _gaussian_slit_window(size: int, fwhm: float, pixel_size: float) -> np.ndarray | None:
+    """Build a geometric-midpoint-centered Gaussian taper, or None to skip the gate."""
+    full_extent = size * pixel_size
+    if fwhm >= full_extent:
+        return None  # D-06: skip the gate entirely for exact light_sheet reduction
+    sigma_px = (fwhm / pixel_size) / (2.0 * math.sqrt(2.0 * math.log(2.0)))
+    center = (size - 1) / 2.0  # D-05: geometric midpoint, matches psfmodels' centered beam waist
+    idx = np.arange(size, dtype=np.float64)
+    window = np.exp(-0.5 * ((idx - center) / sigma_px) ** 2)
+    return window.astype(np.float32)
+
+
+def _apply_aslm_slit_gate(
+    illumination: np.ndarray, axis: int, fwhm: float, dxy: float, dz: float
+) -> np.ndarray:
+    """Multiply the pre-rotation illumination by a Gaussian slit gate along one axis."""
+    pixel_size = dz if axis == 0 else dxy
+    size = illumination.shape[axis]
+    window = _gaussian_slit_window(size, fwhm, pixel_size)
+    if window is None:
+        gated = illumination
+    else:
+        shape = [1, 1, 1]
+        shape[axis] = size
+        gated = illumination * window.reshape(shape)
+
+    # D-08: normalise_psf (seeds.py:16-22) returns a zero-sum array
+    # unchanged and without error, so without this guard a user-chosen
+    # slit_width narrow enough to destroy the illumination energy could
+    # produce an all-zero PSF seed that flows into blind-RL estimation
+    # looking like a valid one. Compare against the ungated illumination's
+    # own sum (a relative statement), not a fixed constant.
+    original_sum = float(illumination.sum())
+    epsilon = max(float(np.finfo(np.float32).eps), original_sum * 1e-7)
+    if float(gated.sum()) < epsilon:
+        raise ValueError(
+            f"slit_width={fwhm!r} is too narrow to capture positive illumination "
+            f"energy along axis {axis} (extent={size * pixel_size!r}); the ASLM "
+            "slit is a static gate centered on the gate axis midpoint, assumed "
+            "perfectly synchronized to the beam waist, so widen slit_width "
+            "rather than adjusting timing"
+        )
+    return gated
+
+
 def generate_psf_seed(
     *,
     psf_mode: str,
@@ -192,8 +278,32 @@ def generate_psf_seed(
     psf_size_xy: int,
     background: float,
     light_sheet_angle: float = 90.0,
+    slit_width: float | None = None,
+    slit_axis: int | None = None,
+    slit_width_px: int | None = None,
 ) -> np.ndarray:
-    """Create a single-detection or light-sheet blind-estimation seed PSF."""
+    """Create a single-detection, light-sheet, or ASLM blind-estimation seed PSF.
+
+    ASLM mode multiplies the illumination PSF, in its pre-rotation frame, by a
+    static Gaussian slit gate centered on the geometric midpoint of the gate
+    axis. The gate is a fixed spatial taper, not a time-resolved simulation:
+    the rolling shutter is assumed to be perfectly synchronized with the
+    swept beam waist, so the illuminated slit always sits exactly at the
+    waist. Timing jitter, shutter/beam desynchronization, and sweep-velocity
+    error are therefore not modelled and are explicitly out of scope for
+    this milestone.
+    """
+    if psf_mode not in ("single", "light_sheet", "aslm"):
+        raise ValueError(
+            f"Unsupported psf_mode={psf_mode!r}; expected one of 'single', 'light_sheet', 'aslm'"
+        )
+
+    gate_axis: int | None = None
+    slit_fwhm: float | None = None
+    if psf_mode == "aslm":  # D-07: validate before generating any PSF
+        gate_axis = _resolve_slit_axis(light_sheet_angle, slit_axis)
+        slit_fwhm = _resolve_slit_fwhm(slit_width, slit_width_px, dxy)
+
     detection = generate_theoretical_psf(
         na=na,
         detection_na=detection_na,
@@ -218,8 +328,6 @@ def generate_psf_seed(
 
     if psf_mode == "single":
         return normalise_psf(detection)
-    if psf_mode != "light_sheet":
-        raise ValueError(f"Unsupported psf_mode={psf_mode!r}")
 
     illumination = generate_theoretical_psf(
         na=na,
@@ -242,5 +350,7 @@ def generate_psf_seed(
         psf_size_xy=psf_size_xy,
         background=background,
     )
+    if psf_mode == "aslm":
+        illumination = _apply_aslm_slit_gate(illumination, gate_axis, slit_fwhm, dxy, dz)
     rotated = rotate_illumination_psf(illumination, light_sheet_angle)
     return normalise_psf(detection * rotated)

@@ -24,8 +24,11 @@ def _configure_cupy_cache() -> None:
         or os.environ.get("TMPDIR")
         or "/tmp"
     )
+    # os.getuid is POSIX-only; fall back to os.getpid on platforms (e.g. Windows)
+    # where it is absent so this module can be imported cross-platform.
+    uid = os.getuid() if hasattr(os, "getuid") else os.getpid()
     os.environ["CUPY_CACHE_DIR"] = str(
-        Path(cache_root) / f"cupy-kernel-cache-{os.getuid()}"
+        Path(cache_root) / f"cupy-kernel-cache-{uid}"
     )
 
 
