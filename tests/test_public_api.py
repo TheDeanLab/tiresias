@@ -6,6 +6,7 @@ class PublicApiTests(unittest.TestCase):
         import tiresias
 
         for name in [
+            "measure_beam_width_profile",
             "estimate_blind_psf_scipy",
             "estimate_blind_psf_cupy",
             "estimate_psf_array_cupy",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .beam_profile import measure_beam_width_profile
 from .blind_rl import (
     clear_cupy_memory,
     deconvolve_with_cupy,
@@ -20,6 +21,7 @@ from .seeds import (
 from .tiling import estimate_psf_from_chunks, open_tiff_memmap, resolve_cupy_blind_chunk_xy
 
 __all__ = [
+    "measure_beam_width_profile",
     "clear_cupy_memory",
     "deconvolve_with_cupy",
     "estimate_blind_psf",
