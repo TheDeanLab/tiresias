@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import unittest
+import warnings
 from pathlib import Path
 from unittest import mock
 
@@ -245,6 +246,102 @@ class BeamProfileTests(unittest.TestCase):
         message = str(ctx.exception)
         self.assertIn("ni", message)
         self.assertIn("dz", message)
+
+    def test_unmeasurable_positions_are_nan_and_every_one_is_named_in_a_warning(self):
+        from tiresias import measure_beam_width_profile
+
+        # Indices 1-5 NaN, index 0 and 6 finite -- measured during planning
+        # at illumination_na=0.6, psf_size_z=21, psf_size_xy=16 (RESEARCH
+        # Pitfall 3), proving the NaN block is not edge-anchored.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _positions_um, widths_um = measure_beam_width_profile(
+                illumination_na=0.6,
+                wavelength=0.561,
+                ni=1.33,
+                ns=1.33,
+                dxy=0.108,
+                dz=0.300,
+                psf_size_z=21,
+                psf_size_xy=16,
+            )
+
+        self.assertEqual(len(caught), 1)
+        self.assertTrue(issubclass(caught[0].category, UserWarning))
+        text = str(caught[0].message)
+        for token in ("0.3", "0.6", "0.9", "1.2", "1.5"):
+            self.assertIn(token, text)
+
+        self.assertTrue(np.isnan(widths_um[[1, 2, 3, 4, 5]]).all())
+        self.assertFalse(np.isnan(widths_um[0]))
+        self.assertFalse(np.isnan(widths_um[6]))
+        self.assertEqual(int(np.isfinite(widths_um).sum()), 16)
+
+    def test_warning_position_count_tracks_the_lateral_window(self):
+        from tiresias import measure_beam_width_profile
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _positions_um, widths_um = measure_beam_width_profile(
+                illumination_na=0.6,
+                wavelength=0.561,
+                ni=1.33,
+                ns=1.33,
+                dxy=0.108,
+                dz=0.300,
+                psf_size_z=21,
+                psf_size_xy=8,
+            )
+
+        self.assertEqual(int(np.isnan(widths_um).sum()), 8)
+        self.assertTrue(np.isnan(widths_um[:8]).all())
+        self.assertEqual(len(caught), 1)
+        text = str(caught[0].message)
+        expected_positions = [round(i * 0.300, 4) for i in range(8)]
+        for position in expected_positions:
+            self.assertIn(str(position), text)
+
+    def test_realistic_parameters_emit_no_warning_and_no_nan(self):
+        from tiresias import measure_beam_width_profile
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _positions_um, widths_um = measure_beam_width_profile(
+                illumination_na=0.4,
+                wavelength=0.561,
+                ni=1.33,
+                ns=1.33,
+                dxy=0.108,
+                dz=0.300,
+                psf_size_z=9,
+                psf_size_xy=128,
+            )
+
+        self.assertEqual(len(caught), 0)
+        self.assertTrue(np.isfinite(widths_um).all())
+
+    def test_unmeasurable_positions_are_never_clamped_or_extrapolated(self):
+        from tiresias import measure_beam_width_profile
+
+        dxy = 0.108
+        psf_size_xy = 16
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            _positions_um, widths_um = measure_beam_width_profile(
+                illumination_na=0.6,
+                wavelength=0.561,
+                ni=1.33,
+                ns=1.33,
+                dxy=dxy,
+                dz=0.300,
+                psf_size_z=21,
+                psf_size_xy=psf_size_xy,
+            )
+
+        nan_mask = np.isnan(widths_um)
+        self.assertTrue(nan_mask.any())
+        finite = widths_um[~nan_mask]
+        self.assertTrue((finite < psf_size_xy * dxy).all())
 
     def test_measurement_path_contains_no_closed_form_or_fitted_beam_model(self):
         # Stripping '#' comment lines before scanning lets this executor's

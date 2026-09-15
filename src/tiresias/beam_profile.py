@@ -120,7 +120,11 @@ def measure_beam_width_profile(
         profile = psf[z, :, peak_x].astype(np.float64)
         peak_value = profile[peak_y]
         if peak_value <= 0:
-            failed_positions.append(positions_um[z])
+            # Round for display only -- positions_um itself stays exact
+            # (D-08); float64 multiplication of index * dz can produce
+            # artifacts like 3 * 0.3 == 0.8999999999999999, which would
+            # silently fail to name "0.9" in the warning text below.
+            failed_positions.append(round(float(positions_um[z]), 6))
             continue
         half_max = peak_value / 2.0
 
@@ -142,12 +146,30 @@ def measure_beam_width_profile(
         left_crossing = _crossing(left_indices)
         right_crossing = _crossing(right_indices)
         if left_crossing is None or right_crossing is None:
-            failed_positions.append(positions_um[z])
+            # Round for display only -- positions_um itself stays exact
+            # (D-08); float64 multiplication of index * dz can produce
+            # artifacts like 3 * 0.3 == 0.8999999999999999, which would
+            # silently fail to name "0.9" in the warning text below.
+            failed_positions.append(round(float(positions_um[z]), 6))
             continue
         widths_um[z] = (right_crossing - left_crossing) * dxy
 
-    # D-09: seam for 05-02's named warnings.warn() contract. NaN alone
-    # already satisfies "not silently wrong"; the warning is additive and
-    # lands in the next plan.
+    # D-09: name every failed position, not just the first -- measured
+    # during planning at illumination_na=0.6, psf_size_z=21, psf_size_xy=16,
+    # index 0 measures cleanly while indices 1 through 5 do not, so the
+    # NaN block is neither contiguous with an array edge nor inferable from
+    # the array's shape. A caller who only saw "5 positions failed" or
+    # "first failure at 0.3 um" could not reconstruct which entries to
+    # skip. The array itself stays untouched -- no clamping to the lateral
+    # extent, no extrapolation from neighbours, no zero fill, and no
+    # dropping of failed entries (which would break the D-07/D-08
+    # parallel-array length contract Phase 6 depends on); this warning is
+    # purely additive surfacing.
+    if failed_positions:
+        warnings.warn(
+            "measure_beam_width_profile: no half-max crossing found at "
+            f"position(s) (um): {failed_positions!r}",
+            stacklevel=2,
+        )
 
     return positions_um, widths_um
