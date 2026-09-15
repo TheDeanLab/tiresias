@@ -371,6 +371,148 @@ class BeamProfileTests(unittest.TestCase):
         self.assertTrue(stripped_source.strip())
         self.assertIn("generate_theoretical_psf", stripped_source)
 
+    def test_width_measurement_is_subvoxel_accurate_under_lateral_refinement(self):
+        from tiresias import measure_beam_width_profile
+
+        base = dict(
+            illumination_na=0.4,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            dz=0.300,
+            psf_size_z=5,
+        )
+        # psf_size_xy doubles as dxy halves so the physical lateral window
+        # (psf_size_xy * dxy) stays constant -- without this the refinement
+        # would also shrink the window and confound sampling with
+        # truncation. Measured during planning: coarse=0.73414,
+        # fine=0.72962 (shift 0.0045 um), finer=0.72833 (shift 0.0058 um)
+        # against a 0.108 um coarse voxel -- roughly a 5x margin under the
+        # quarter-voxel assertion below.
+        coarse = float(
+            measure_beam_width_profile(dxy=0.108, psf_size_xy=128, **base)[1][2]
+        )
+        fine = float(
+            measure_beam_width_profile(dxy=0.054, psf_size_xy=256, **base)[1][2]
+        )
+        finer = float(
+            measure_beam_width_profile(dxy=0.027, psf_size_xy=512, **base)[1][2]
+        )
+        for name, value in (("coarse", coarse), ("fine", fine), ("finer", finer)):
+            with self.subTest(name=name):
+                self.assertTrue(np.isfinite(value))
+        for name, value in (("fine", fine), ("finer", finer)):
+            with self.subTest(name=name):
+                self.assertLess(abs(coarse - value), 0.25 * 0.108)
+
+    def test_measured_width_is_not_snapped_to_a_voxel_multiple(self):
+        from tiresias import measure_beam_width_profile
+
+        base = dict(
+            illumination_na=0.4,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            dz=0.300,
+            psf_size_z=5,
+        )
+        coarse = float(
+            measure_beam_width_profile(dxy=0.108, psf_size_xy=128, **base)[1][2]
+        )
+        # A nearest-voxel threshold implementation would give an exact
+        # integer or half-integer multiple of dxy; the interpolated
+        # implementation gives about 6.7976, not within 1e-6 of an integer.
+        ratio = coarse / 0.108
+        self.assertGreater(abs(ratio - round(ratio)), 1e-6)
+
+    def test_exact_half_max_plateau_resolves_to_the_outermost_sample(self):
+        from tiresias import measure_beam_width_profile
+
+        # Global peak at (z, y, x) = (any, 4, 4); the Y profile through
+        # x=4 has a two-sample exactly-half-max plateau on each side of the
+        # peak: [0.0, 0.1, 0.5, 0.5, 1.0, 0.5, 0.5, 0.1, 0.0].
+        raw = np.zeros((3, 9, 9), dtype=np.float32)
+        raw[:, :, 4] = [0.0, 0.1, 0.5, 0.5, 1.0, 0.5, 0.5, 0.1, 0.0]
+
+        with mock.patch.object(seeds.pm, "make_psf", return_value=raw):
+            _positions_um, widths_um = measure_beam_width_profile(
+                illumination_na=0.4,
+                wavelength=0.561,
+                ni=1.33,
+                ns=1.33,
+                dxy=0.108,
+                dz=0.300,
+                psf_size_z=3,
+                psf_size_xy=9,
+            )
+
+        # The strict below-half-max test (`values < half_max`, not `<=`)
+        # treats an exactly-half-max sample as still inside the beam, so
+        # the left crossing lands on index 2 and the right on index 6 --
+        # the OUTERMOST half-max samples, the widest reading. Under a
+        # less-than-or-equal test the crossings would instead land at
+        # indices 3 and 5 and the width would be 2 * dxy instead of
+        # 4 * dxy, so this test discriminates the two conventions. Note
+        # generate_theoretical_psf normalises by sum before this function
+        # sees it (irrelevant here since the array is mocked directly, but
+        # normalisation scales uniformly and leaves the half-max relation
+        # exact in the real path too).
+        expected = 4 * 0.108
+        for width in widths_um:
+            self.assertAlmostEqual(float(width), expected, places=9)
+
+    def test_single_z_slice_returns_a_length_one_profile(self):
+        from tiresias import measure_beam_width_profile
+
+        positions_um, widths_um = measure_beam_width_profile(
+            illumination_na=0.4,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            dxy=0.108,
+            dz=0.300,
+            psf_size_z=1,
+            psf_size_xy=64,
+        )
+        # Smallest legal input -- distinct from psf_size_z=0, which Task
+        # 1's guard rejects with a ValueError.
+        self.assertEqual(positions_um.shape, (1,))
+        self.assertEqual(widths_um.shape, (1,))
+        self.assertEqual(positions_um[0], 0.0)
+        self.assertTrue(np.isfinite(widths_um[0]))
+
+    def test_peak_on_the_y_boundary_yields_nan_on_the_side_with_no_outward_sample(self):
+        from tiresias import measure_beam_width_profile
+
+        # Global peak sits at y == 0 -- the left walk has no sample outside
+        # the peak, so below[0] == 0 fires immediately and there is no
+        # bracketing pair to interpolate between. NaN is the only honest
+        # answer.
+        raw = np.zeros((3, 9, 9), dtype=np.float32)
+        raw[:, 0, 4] = 1.0
+        raw[:, 1, 4] = 0.1
+
+        with mock.patch.object(seeds.pm, "make_psf", return_value=raw):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                _positions_um, widths_um = measure_beam_width_profile(
+                    illumination_na=0.4,
+                    wavelength=0.561,
+                    ni=1.33,
+                    ns=1.33,
+                    dxy=0.108,
+                    dz=0.300,
+                    psf_size_z=3,
+                    psf_size_xy=9,
+                )
+
+        self.assertTrue(np.isnan(widths_um).all())
+        self.assertEqual(len(caught), 1)
+        text = str(caught[0].message)
+        expected_positions = [round(i * 0.300, 4) for i in range(3)]
+        for position in expected_positions:
+            self.assertIn(str(position), text)
+
 
 if __name__ == "__main__":
     unittest.main()
