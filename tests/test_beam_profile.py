@@ -200,6 +200,52 @@ class BeamProfileTests(unittest.TestCase):
         self.assertTrue(modules <= allowed_modules, modules)
         self.assertTrue(names <= allowed_names, names)
 
+    def test_rejects_missing_or_non_positive_parameters_before_generating_a_psf(self):
+        from tiresias import measure_beam_width_profile
+
+        good = dict(
+            illumination_na=0.4,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            dxy=0.108,
+            dz=0.300,
+            psf_size_z=5,
+            psf_size_xy=32,
+        )
+        # Both -1 and 0 are covered because psf_size_z/psf_size_xy are
+        # integers where zero is the interesting boundary, while the
+        # optical parameters are floats where negative is the interesting
+        # one -- the guard's `value <= 0` test treats them identically, so
+        # this matrix exercises both boundary shapes for every parameter.
+        for name in good:
+            for bad in (None, 0, -1):
+                with self.subTest(parameter=name, value=bad):
+                    kwargs = dict(good, **{name: bad})
+                    with mock.patch.object(seeds.pm, "make_psf") as make_psf:
+                        with self.assertRaisesRegex(ValueError, name):
+                            measure_beam_width_profile(**kwargs)
+                        self.assertEqual(make_psf.call_count, 0)
+
+    def test_names_every_offending_parameter_in_one_error(self):
+        from tiresias import measure_beam_width_profile
+
+        good = dict(
+            illumination_na=0.4,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            dxy=0.108,
+            dz=0.300,
+            psf_size_z=5,
+            psf_size_xy=32,
+        )
+        with self.assertRaises(ValueError) as ctx:
+            measure_beam_width_profile(**dict(good, ni=None, dz=-0.5))
+        message = str(ctx.exception)
+        self.assertIn("ni", message)
+        self.assertIn("dz", message)
+
     def test_measurement_path_contains_no_closed_form_or_fitted_beam_model(self):
         # Stripping '#' comment lines before scanning lets this executor's
         # own explanatory prose name what was rejected without invalidating

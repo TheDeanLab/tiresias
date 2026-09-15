@@ -36,6 +36,34 @@ def measure_beam_width_profile(
     width measured at `positions_um[i]`, or NaN when no clean half-max
     crossing exists at that position.
     """
+    # ASVS V5: validate this function's OWN parameters before spending time
+    # on PSF generation. illumination_na is validated HERE and nowhere else
+    # -- generate_theoretical_psf deletes its own illumination_na argument on
+    # entry (seeds.py:60) and never validates it, so this is the only guard
+    # that will ever catch it. psf_size_z/psf_size_xy are validated here
+    # because the downstream failure for a non-positive size is an opaque
+    # `ValueError: zero-size array to reduction operation maximum which has
+    # no identity` raised from inside NumPy, naming neither the parameter
+    # nor the caller (measured during planning against psf_size_z=0 and
+    # psf_size_xy=0). Shape copied from seeds.py:62-74 so the codebase has
+    # one validation idiom, not two.
+    required_values = {
+        "illumination_na": illumination_na,
+        "wavelength": wavelength,
+        "ni": ni,
+        "ns": ns,
+        "dxy": dxy,
+        "dz": dz,
+        "psf_size_z": psf_size_z,
+        "psf_size_xy": psf_size_xy,
+    }
+    missing = [name for name, value in required_values.items() if value is None or value <= 0]
+    if missing:
+        raise ValueError(
+            "Missing or non-positive parameter(s) for measure_beam_width_profile: "
+            + ", ".join(missing)
+        )
+
     # D-04: generate the illumination-arm PSF internally by plugging
     # illumination_na into detection_na -- the same trick generate_psf_seed
     # already uses for its own illumination branch (seeds.py:332-336).
