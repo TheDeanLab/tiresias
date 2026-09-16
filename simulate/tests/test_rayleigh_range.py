@@ -486,6 +486,74 @@ class RayleighRangeTests(unittest.TestCase):
 
         self.assertEqual(right, 8.0)
 
+    def test_the_reported_boundary_is_stable_under_axial_sampling_refinement(self):
+        # ROADMAP Success Criterion 4, proven on synthetic arrays with zero
+        # PSF generations (RESEARCH Pitfall 5): `locate_rayleigh_range`
+        # consumes two arrays rather than optical parameters, so this
+        # criterion is provable without paying for a PSF generation per
+        # sampling step -- unlike Phase 5's equivalent refinement test,
+        # whose function's contract starts from optical parameters. These
+        # values are pure float64 arithmetic over hand-authored arrays and
+        # are therefore exactly reproducible, unlike the psfmodels-backed
+        # numbers in 06-01, so the tight tolerances here are deliberate and
+        # safe.
+        #
+        # This closed form describes the hand-authored TEST FIXTURE, not
+        # the beam physics, and is not a model the implementation is
+        # permitted to use -- 06-01's AST allowlist and token scan already
+        # forbid any such model from reaching simulate/rayleigh_range.py.
+        half_width_um = 2.0 * np.sqrt(np.sqrt(2.0) - 1.0)
+        analytic_left = 10.0 - half_width_um
+        analytic_right = 10.0 + half_width_um
+
+        lefts: list[float] = []
+        rights: list[float] = []
+        extents: list[float] = []
+        for step in (0.5, 0.25, 0.125):
+            with self.subTest(step=step):
+                positions_um, widths_um = _synthetic_quadratic_profile(step)
+                waist, left, right = locate_rayleigh_range(positions_um, widths_um)
+                # The step is chosen so z = 10.0 is always a sampled
+                # position -- without that the waist itself would move
+                # between runs and confound the measurement being refined
+                # with the thing being measured (mirrors Phase 5's
+                # constant-physical-window reasoning).
+                self.assertEqual(waist, 10.0)
+                self.assertEqual(float(np.min(widths_um)), 1.0)
+                lefts.append(left)
+                rights.append(right)
+                extents.append(right - left)
+
+        coarsest_voxel_um = 0.5
+        quarter_voxel_um = 0.25 * coarsest_voxel_um
+        # Planning-measured shift is about 0.0232 um on each side -- a
+        # roughly five-fold margin under this quarter-voxel bar, so a
+        # future regression that merely squeaks under it is still visibly
+        # worse.
+        self.assertLess(abs(lefts[0] - lefts[-1]), quarter_voxel_um)
+        self.assertLess(abs(rights[0] - rights[-1]), quarter_voxel_um)
+
+        # The stronger claim the roadmap's "not by a large jump" wording
+        # implies: the absolute error against the analytic crossing
+        # strictly decreases at each refinement, on both sides (about
+        # 0.0244, 0.0029, 0.0012 um). A snapped-to-sample or otherwise
+        # non-interpolating implementation would show errors that jump
+        # around at the voxel scale instead of shrinking.
+        left_errors = [abs(v - analytic_left) for v in lefts]
+        right_errors = [abs(v - analytic_right) for v in rights]
+        self.assertGreater(left_errors[0], left_errors[1])
+        self.assertGreater(left_errors[1], left_errors[2])
+        self.assertGreater(right_errors[0], right_errors[1])
+        self.assertGreater(right_errors[1], right_errors[2])
+
+        # The derived quantity Phase 8 will actually plot is stable too.
+        for measured, expected in zip(extents, (2.525483, 2.568621, 2.571889)):
+            self.assertAlmostEqual(measured, expected, places=5)
+        analytic_extent = 2.0 * half_width_um
+        for extent in extents:
+            self.assertLess(abs(extent - analytic_extent), 0.06)
+        self.assertLess(max(extents) - min(extents), quarter_voxel_um)
+
     def test_module_imports_are_confined_to_numpy(self):
         # The structural half of the no-fitted-model prohibition (D-07).
         # This mechanically forbids pulling in a root-finder, a smoothing
