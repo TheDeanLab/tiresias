@@ -109,7 +109,8 @@ tiresias-estimate-psf \
   --ns 1.33 \
   --psf-mode aslm \
   --slit-width 2.0 \
-  --light-sheet-angle 90.0
+  --illumination-polar-deg 90.0 \
+  --illumination-azimuthal-deg 0.0
 ```
 
 Common PSF-estimation options:
@@ -134,15 +135,16 @@ Common PSF-estimation options:
 | `--psf-mode` | `single` | Theoretical seed mode: `single`, `light_sheet`, or `aslm`. The default preserves existing behavior exactly. |
 | `--slit-width` | none | ASLM slit gate FWHM in physical units (same units as `--dxy`/`--dz`). Applies only to `aslm` mode; exactly one of `--slit-width` or `--slit-width-px` must be supplied. |
 | `--slit-width-px` | none | ASLM slit gate FWHM as a pixel count, converted to physical units via `--dxy`. Applies only to `aslm` mode; exactly one of `--slit-width` or `--slit-width-px` must be supplied. |
-| `--slit-axis` | auto | Override the auto-detected ASLM gate axis (`0` for Z, `2` for X). Applies only to `aslm` mode. |
-| `--light-sheet-angle` | `90.0` | Illumination rotation angle in degrees, used by both `light_sheet` and `aslm` modes. |
+| `--slit-axis` | auto | Override the auto-detected ASLM gate axis (`0` for Z, `1` for Y, or `2` for X). Applies only to `aslm` mode. |
+| `--illumination-polar-deg` | `90.0` | Polar angle, in degrees, of the illumination propagation direction, measured from the illumination's own pre-rotation +Z propagation axis. Used by both `light_sheet` and `aslm` modes. The default `90.0` (paired with the azimuthal default below) is the broadside default. |
+| `--illumination-azimuthal-deg` | `0.0` | Azimuthal angle, in degrees, of the illumination propagation direction, measured in the X-Y plane from +X. Used by both `light_sheet` and `aslm` modes. The default `0.0` (paired with the polar default above) is the broadside default. |
 
-These five flags are shared by both `tiresias-estimate-psf` and `tiresias-deconvolve` via the same optical-argument parser.
+These six flags are shared by both `tiresias-estimate-psf` and `tiresias-deconvolve` via the same optical-argument parser.
 
 The output PSF is a float32 TIFF normalized to sum to one.
 Without `--psf-seed-path`, theoretical seed generation requires
-`--wavelength`, `--dz`, `--ni`, `--ns`, and either `--dxy` or the
-camera-pixel-size/magnification pair.
+`--detection-na` (or `--na`), `--wavelength`, `--dz`, `--ni`, `--ns`, and
+either `--dxy` or the camera-pixel-size/magnification pair.
 
 ## Deconvolve a TIFF Volume
 
@@ -162,8 +164,9 @@ accelerated CuPy FFT Richardson-Lucy restoration, and writes a uint16 TIFF.
 makes `tiresias-deconvolve` build a theoretical seed through the same
 `generate_psf_seed()` path and the same optical and slit flags as
 `tiresias-estimate-psf` (`--psf-mode`, `--slit-width`, `--slit-width-px`,
-`--slit-axis`, `--light-sheet-angle`, and the other optical arguments). When
-both `--psf-path` and optical flags are given, the loaded PSF wins.
+`--slit-axis`, `--illumination-polar-deg`, `--illumination-azimuthal-deg`, and
+the other optical arguments). When both `--psf-path` and optical flags are
+given, the loaded PSF wins.
 
 Generate an ASLM seed on the fly, with no PSF path:
 
@@ -269,7 +272,8 @@ seed = generate_psf_seed(
     psf_size_z=61,
     psf_size_xy=128,
     background=0.0,
-    light_sheet_angle=90.0,
+    polar_deg=90.0,
+    azimuthal_deg=0.0,
 )
 ```
 
@@ -297,7 +301,8 @@ seed = generate_psf_seed(
     psf_size_z=61,
     psf_size_xy=128,
     background=0.0,
-    light_sheet_angle=90.0,
+    polar_deg=90.0,
+    azimuthal_deg=0.0,
     slit_width=2.0,
 )
 ```
@@ -311,32 +316,59 @@ shutter that follows the swept beam waist, assumed perfectly synchronized to
 it.
 
 The slit gate multiplies the illumination PSF in its pre-rotation frame,
-before `rotate_illumination_psf` runs. Applying the gate before rotation is
-what keeps the result correct at oblique `light_sheet_angle` values, not only
-at 90 degrees.
+before `rotate_illumination` runs. Applying the gate before rotation is what
+keeps the result correct regardless of the requested illumination direction,
+not only at the broadside default.
 
-The gate narrows exactly one axis of the `(z, y, x)` volume. By default that
-axis is derived from `light_sheet_angle` by rounding the angle to the nearest
-cardinal quadrant: even quadrants gate axis 0 (Z), odd quadrants gate axis 2
-(X). The default `light_sheet_angle=90.0` gates axis 2 (X); `0.0` or `180.0`
-gate axis 0 (Z). Exact tie angles resolve through Python's round-half-to-even
-rule, so 45, 135, 225, and 315 degrees all resolve to axis 0. This rounding is
-unconditional — an oblique angle still snaps to a cardinal gating axis, which
-is exactly why the `slit_axis` override exists.
+The illumination propagation direction is set by two angles in degrees:
+`polar_deg`, measured from the illumination's own pre-rotation +Z optical
+axis, and `azimuthal_deg`, measured in the X-Y plane from +X — the standard
+physics spherical convention. The defaults `polar_deg=90.0, azimuthal_deg=0.0`
+reproduce the pre-v1.1 broadside geometry (a beam propagating along X).
 
-Pass `slit_axis` to bypass auto-detection entirely. It accepts only `0` (Z) or
-`2` (X); `1` (Y) is rejected with a `ValueError`, because `rotate_illumination_psf`
-only rotates the Z/X plane, so gating Y would not correspond to any
-rolling-shutter direction. Use the override for oblique `light_sheet_angle`
-values where the snapped axis is not the one you want, or to match a
-lab-specific axis convention.
+The canonical range for `polar_deg` is `[0, 180]` and for `azimuthal_deg` is
+`[0, 360)`, but these ranges are documentation guidance, not enforced: any
+finite float is accepted, and a value outside the canonical range describes an
+equivalent, redundant geometry rather than being rejected. Non-finite values
+(`NaN`, infinity) ARE rejected with a `ValueError`, before any PSF is
+generated. At the poles (`polar_deg` of `0` or `180`) the beam points along
+the Z axis and `azimuthal_deg` has no effect — this is an expected geometric
+degeneracy, not a bug.
+
+Rotation is performed in physical space, not voxel-index space: the
+pre-rotation illumination PSF is resampled onto an isotropic grid at the `dxy`
+spacing, rotated there, and resampled back to the native `(dz, dxy)` grid, so
+a requested angle is an angle in micrometers, not in voxel indices. This
+matters for this package specifically because `dz` is typically several times
+`dxy`; a naive index-space rotation would tilt the beam by a visibly different
+angle than requested. The four axis-aligned directions matching the pre-v1.1
+cardinal cases (the old single-angle rotation parameter's `0`, `90`, `180`,
+and `270` degree values) are delegated to the original rotation code path and
+reproduce pre-v1.1 output exactly; every other direction —
+including orientations with a Y component, which the old single-angle
+parameter could not express at all — uses the physical-space pipeline
+described above.
+
+The gate narrows exactly one axis of the `(z, y, x)` volume: the single
+coordinate axis the 3D propagation direction is closest to, now any of `0`
+(Z), `1` (Y), or `2` (X). Ties between two axes resolve to the lower axis
+index. The default direction `(polar_deg=90.0, azimuthal_deg=0.0)` gates axis
+2 (X); `(polar_deg=0.0, azimuthal_deg=<any>)` or
+`(polar_deg=180.0, azimuthal_deg=<any>)` gate axis 0 (Z).
+
+Pass `slit_axis` to bypass auto-detection entirely. It accepts `0`, `1`, or
+`2`; anything else raises a `ValueError` reporting
+`slit_axis must be 0, 1, or 2`. Use the override for oblique directions where
+the snapped axis is not the one you want, or to match a lab-specific axis
+convention.
 
 The gate itself is a Gaussian taper, not a hard binary mask — pixels outside
 the slit are attenuated smoothly rather than zeroed. `slit_width` is the
 taper's full width at half maximum (FWHM), and the taper is centered on the
 geometric midpoint of the gated axis, matching the centered beam waist that
 `psfmodels` produces. The pixel spacing used to convert the physical FWHM into
-pixels is `dz` when the gate axis is 0 (Z) and `dxy` when it is 2 (X).
+pixels is `dz` when the gate axis is 0 (Z) and `dxy` when it is 1 (Y) or 2
+(X).
 
 `slit_width` is a physical width in the same units as `dxy` and `dz`
 (micrometers, per Input Expectations). `slit_width_px` is the equivalent
@@ -381,7 +413,8 @@ common = dict(
     psf_size_z=61,
     psf_size_xy=128,
     background=0.0,
-    light_sheet_angle=90.0,
+    polar_deg=90.0,
+    azimuthal_deg=0.0,
 )
 
 seed_px = generate_psf_seed(psf_mode="aslm", slit_width_px=20, **common)
@@ -428,11 +461,12 @@ common = dict(
     psf_size_z=61,
     psf_size_xy=128,
     background=0.0,
-    light_sheet_angle=90.0,
+    polar_deg=90.0,
+    azimuthal_deg=0.0,
 )
 
-# light_sheet_angle=90.0 gates axis 2 (X), whose full extent is
-# psf_size_xy * dxy.
+# The default direction (polar_deg=90.0, azimuthal_deg=0.0) gates axis 2 (X),
+# whose full extent is psf_size_xy * dxy.
 full_extent = 128 * 0.108
 
 seed_light_sheet = generate_psf_seed(psf_mode="light_sheet", **common)
@@ -517,7 +551,10 @@ your gate axis.
 The requested `slit_width` (or `slit_width_px`) retained no usable
 illumination energy along the gate axis. This guard exists because
 normalizing an all-zero seed would otherwise pass silently into blind
-estimation; the error is raised before any expensive estimation work begins.
-The ASLM gate is a static slit, perfectly synchronized to the beam waist, so
-there is no timing to adjust — widen `slit_width` (or `slit_width_px`)
-instead.
+estimation; the error fires after the detection and illumination PSFs have
+already been generated — `generate_psf_seed` calls `generate_theoretical_psf`
+twice before this guard runs — but before the seed is returned, so with
+`psf_model="vectorial"` two potentially slow optical computations will
+already have run. The ASLM gate is a static slit, perfectly synchronized to
+the beam waist, so there is no timing to adjust — widen `slit_width` (or
+`slit_width_px`) instead.
