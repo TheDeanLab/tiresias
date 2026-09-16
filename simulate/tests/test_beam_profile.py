@@ -8,7 +8,7 @@ from unittest import mock
 
 import numpy as np
 
-from tiresias import beam_profile
+from simulate import beam_profile
 from tiresias import seeds
 
 # D-07-style shared realistic optical parameters, mirroring how the example
@@ -25,7 +25,7 @@ COMMON = dict(
 
 class BeamProfileTests(unittest.TestCase):
     def test_public_api_measures_a_real_illumination_psf_end_to_end(self):
-        from tiresias import measure_beam_width_profile
+        from simulate import measure_beam_width_profile
 
         kwargs = dict(
             wavelength=0.561,
@@ -63,7 +63,7 @@ class BeamProfileTests(unittest.TestCase):
         self.assertGreater(centres[1], centres[2])
 
     def test_returns_two_parallel_float64_arrays_one_entry_per_z_voxel(self):
-        from tiresias.beam_profile import measure_beam_width_profile
+        from simulate.beam_profile import measure_beam_width_profile
 
         positions_um, widths_um = measure_beam_width_profile(
             illumination_na=0.3, psf_size_z=9, **COMMON
@@ -85,7 +85,7 @@ class BeamProfileTests(unittest.TestCase):
                 self.assertEqual(len(widths_n), psf_size_z)
 
     def test_positions_are_physical_micrometres_in_ascending_voxel_order(self):
-        from tiresias.beam_profile import measure_beam_width_profile
+        from simulate.beam_profile import measure_beam_width_profile
 
         for dz in (0.300, 0.150):
             with self.subTest(dz=dz):
@@ -142,7 +142,7 @@ class BeamProfileTests(unittest.TestCase):
         )
 
     def test_higher_illumination_na_tightens_measured_waist(self):
-        from tiresias.beam_profile import measure_beam_width_profile
+        from simulate.beam_profile import measure_beam_width_profile
 
         centres = []
         for illumination_na in (0.2, 0.3, 0.4, 0.5, 0.6):
@@ -159,7 +159,7 @@ class BeamProfileTests(unittest.TestCase):
         self.assertLess(centres[-1], 0.5 * centres[0], centres)
 
     def test_generates_only_the_illumination_arm_psf_exactly_once(self):
-        from tiresias.beam_profile import measure_beam_width_profile
+        from simulate.beam_profile import measure_beam_width_profile
 
         raw = np.zeros((5, 9, 9), dtype=np.float32)
         raw[:, 4, 4] = 1.0
@@ -196,13 +196,13 @@ class BeamProfileTests(unittest.TestCase):
                 for alias in node.names:
                     names.add(alias.name)
 
-        allowed_modules = {"__future__", "warnings", "numpy", "seeds"}
+        allowed_modules = {"__future__", "warnings", "numpy", "tiresias.seeds"}
         allowed_names = {"annotations", "generate_theoretical_psf"}
         self.assertTrue(modules <= allowed_modules, modules)
         self.assertTrue(names <= allowed_names, names)
 
     def test_rejects_missing_or_non_positive_parameters_before_generating_a_psf(self):
-        from tiresias import measure_beam_width_profile
+        from simulate import measure_beam_width_profile
 
         good = dict(
             illumination_na=0.4,
@@ -229,7 +229,7 @@ class BeamProfileTests(unittest.TestCase):
                         self.assertEqual(make_psf.call_count, 0)
 
     def test_names_every_offending_parameter_in_one_error(self):
-        from tiresias import measure_beam_width_profile
+        from simulate import measure_beam_width_profile
 
         good = dict(
             illumination_na=0.4,
@@ -248,7 +248,7 @@ class BeamProfileTests(unittest.TestCase):
         self.assertIn("dz", message)
 
     def test_unmeasurable_positions_are_nan_and_every_one_is_named_in_a_warning(self):
-        from tiresias import measure_beam_width_profile
+        from simulate import measure_beam_width_profile
 
         # Indices 1-5 NaN, index 0 and 6 finite -- measured during planning
         # at illumination_na=0.6, psf_size_z=21, psf_size_xy=16 (RESEARCH
@@ -278,7 +278,7 @@ class BeamProfileTests(unittest.TestCase):
         self.assertEqual(int(np.isfinite(widths_um).sum()), 16)
 
     def test_warning_position_count_tracks_the_lateral_window(self):
-        from tiresias import measure_beam_width_profile
+        from simulate import measure_beam_width_profile
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -302,7 +302,7 @@ class BeamProfileTests(unittest.TestCase):
             self.assertIn(str(position), text)
 
     def test_realistic_parameters_emit_no_warning_and_no_nan(self):
-        from tiresias import measure_beam_width_profile
+        from simulate import measure_beam_width_profile
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -321,7 +321,7 @@ class BeamProfileTests(unittest.TestCase):
         self.assertTrue(np.isfinite(widths_um).all())
 
     def test_unmeasurable_positions_are_never_clamped_or_extrapolated(self):
-        from tiresias import measure_beam_width_profile
+        from simulate import measure_beam_width_profile
 
         dxy = 0.108
         psf_size_xy = 16
@@ -372,7 +372,7 @@ class BeamProfileTests(unittest.TestCase):
         self.assertIn("generate_theoretical_psf", stripped_source)
 
     def test_width_measurement_is_subvoxel_accurate_under_lateral_refinement(self):
-        from tiresias import measure_beam_width_profile
+        from simulate import measure_beam_width_profile
 
         base = dict(
             illumination_na=0.4,
@@ -406,7 +406,7 @@ class BeamProfileTests(unittest.TestCase):
                 self.assertLess(abs(coarse - value), 0.25 * 0.108)
 
     def test_measured_width_is_not_snapped_to_a_voxel_multiple(self):
-        from tiresias import measure_beam_width_profile
+        from simulate import measure_beam_width_profile
 
         base = dict(
             illumination_na=0.4,
@@ -426,7 +426,7 @@ class BeamProfileTests(unittest.TestCase):
         self.assertGreater(abs(ratio - round(ratio)), 1e-6)
 
     def test_exact_half_max_plateau_resolves_to_the_outermost_sample(self):
-        from tiresias import measure_beam_width_profile
+        from simulate import measure_beam_width_profile
 
         # Global peak at (z, y, x) = (any, 4, 4); the Y profile through
         # x=4 has a two-sample exactly-half-max plateau on each side of the
@@ -462,7 +462,7 @@ class BeamProfileTests(unittest.TestCase):
             self.assertAlmostEqual(float(width), expected, places=9)
 
     def test_single_z_slice_returns_a_length_one_profile(self):
-        from tiresias import measure_beam_width_profile
+        from simulate import measure_beam_width_profile
 
         positions_um, widths_um = measure_beam_width_profile(
             illumination_na=0.4,
@@ -482,7 +482,7 @@ class BeamProfileTests(unittest.TestCase):
         self.assertTrue(np.isfinite(widths_um[0]))
 
     def test_peak_on_the_y_boundary_yields_nan_on_the_side_with_no_outward_sample(self):
-        from tiresias import measure_beam_width_profile
+        from simulate import measure_beam_width_profile
 
         # Global peak sits at y == 0 -- the left walk has no sample outside
         # the peak, so below[0] == 0 fires immediately and there is no

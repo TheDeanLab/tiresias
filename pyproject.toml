@@ -43,4 +43,4 @@ tiresias-deconvolve = "tiresias.cli:deconvolve_main"
 where = ["src"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "simulate/tests"]

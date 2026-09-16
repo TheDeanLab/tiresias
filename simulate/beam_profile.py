@@ -2,8 +2,9 @@
 
 Analysis of an already-generated illumination PSF array (Y-axis FWHM per Z
 position), kept separate from `seeds.py` (which scopes itself to PSF
-*generation*) -- this module is the natural home for Phase 6's future
-Rayleigh-range locator too.
+*generation*). The Rayleigh-range locator built on top of this module's
+output lives in the sibling module `rayleigh_range.py`; both sit outside the
+installed `tiresias` package (D-01/D-02).
 """
 
 from __future__ import annotations
@@ -12,7 +13,10 @@ import warnings
 
 import numpy as np
 
-from .seeds import generate_theoretical_psf
+# D-04: simulate/ is an external consumer of the installed tiresias package
+# rather than a duplicate of its PSF-generation logic, so this import is
+# absolute (tiresias.seeds), not relative -- simulate/ has no seeds sibling.
+from tiresias.seeds import generate_theoretical_psf
 
 __all__ = ["measure_beam_width_profile"]
 
