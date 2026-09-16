@@ -66,16 +66,18 @@ COMMON = {
     "psf_size_z": 61,
     "psf_size_xy": 128,
     "background": 0.0,
-    "light_sheet_angle": 90.0,
+    "polar_deg": 90.0,
+    "azimuthal_deg": 0.0,
 }
 
 # The full extent of the pre-rotation gate axis. Computed from COMMON, never
 # hardcoded, so the two stay in lockstep if a demo parameter is ever edited.
-# For light_sheet_angle=90.0 the gate axis resolves to axis 2 (X), whose pixel
-# pitch is dxy (see seeds.py::_resolve_slit_axis) -- axis 0 would use dz
-# instead. At slit_width == FULL_EXTENT, _gaussian_slit_window (seeds.py:213-
-# 222) returns None and the gate is skipped entirely, so the aslm seed is
-# bit-identical to the light_sheet seed (ASLM-05).
+# At the default direction (polar_deg=90.0, azimuthal_deg=0.0) the gate axis
+# resolves to axis 2 (X), whose pixel pitch is dxy (see
+# seeds.py::_resolve_slit_axis) -- axis 0 would use dz instead. At
+# slit_width == FULL_EXTENT, _gaussian_slit_window (seeds.py:213-222) returns
+# None and the gate is skipped entirely, so the aslm seed is bit-identical to
+# the light_sheet seed (ASLM-05).
 FULL_EXTENT = COMMON["psf_size_xy"] * COMMON["dxy"]  # 13.824 um
 
 # D-08: 7 points, roughly log-spaced with a factor-of-two ladder, from a
