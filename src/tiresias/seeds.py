@@ -158,8 +158,8 @@ def _rotation_matrix(polar_deg: float, azimuthal_deg: float) -> np.ndarray:
     # azimuthal_deg is measured from +X in the X-Y plane -- the standard
     # physics spherical convention, embedded into this project's (Z, Y, X)
     # array index order.
-    # D-02: both angles are in degrees, not radians, matching how
-    # light_sheet_angle was always specified/documented.
+    # D-02: both angles are in degrees, not radians, matching how the old
+    # single-angle rotation parameter was always specified/documented.
     if not math.isfinite(polar_deg):
         raise ValueError(f"polar_deg must be finite, got {polar_deg!r}")
     if not math.isfinite(azimuthal_deg):
@@ -186,9 +186,9 @@ def _rotation_matrix(polar_deg: float, azimuthal_deg: float) -> np.ndarray:
 def _spherical_direction(polar_deg: float, azimuthal_deg: float) -> np.ndarray:
     """Return the (Z, Y, X) propagation unit vector for (polar_deg, azimuthal_deg)."""
     # D-03: (90.0, 0.0) is the fixed reference point mapping to the old
-    # broadside light_sheet_angle=90.0 default, yielding (Z=0, Y=0, X=1). This
-    # is the single source of truth for the direction vector -- callers never
-    # re-derive the trig themselves.
+    # broadside default (formerly a single 90.0-degree angle parameter),
+    # yielding (Z=0, Y=0, X=1). This is the single source of truth for the
+    # direction vector -- callers never re-derive the trig themselves.
     return _rotation_matrix(polar_deg, azimuthal_deg) @ np.array([1.0, 0.0, 0.0])
 
 
@@ -291,14 +291,26 @@ def _resolve_slit_axis(direction: np.ndarray, slit_axis: int | None = None) -> i
     # D-05: an explicit override bypasses auto-detection entirely, now
     # accepting all three axes. Otherwise the resolver snaps the 3D
     # propagation direction to whichever single coordinate axis it is closest
-    # to and gates along that one pre-rotation axis -- numpy.argmax's
-    # documented first-occurrence behavior supplies the tie-break for
-    # directions equidistant between two axes with no extra code.
+    # to and gates along that one pre-rotation axis.
     if slit_axis is not None:
         if slit_axis not in (0, 1, 2):
             raise ValueError(f"slit_axis must be 0, 1, or 2, got {slit_axis!r}")
         return slit_axis
-    return int(np.argmax(np.abs(direction)))
+    # Correction to 07-RESEARCH.md's plain-argmax recommendation (Assumption
+    # A1): a raw numpy.argmax(numpy.abs(direction)) is NOT a reliable
+    # tie-break at the legacy quadrant-tie angles (45/135/225/315 degrees).
+    # Ry(135deg)'s cos/sin components are independently rounded floats that
+    # differ from each other by ~1 ULP (e.g. abs(cos)=0.7071067811865475 vs
+    # abs(sin)=0.7071067811865476), so a bare argmax picks whichever
+    # component happened to round up -- axis 0 at some tie angles, axis 2 at
+    # others -- instead of the legacy round-half-to-even quadrant heuristic's
+    # consistent axis-0 preference at all four tie angles (pinned by the
+    # 07-01 fixture). Snap any axis within RIGHT_ANGLE_TOLERANCE of the true
+    # maximum magnitude into a tie, then let argmax's first-occurrence
+    # behavior break the tie in favor of the lowest axis index (Z).
+    magnitudes = np.abs(direction)
+    is_near_max = magnitudes >= magnitudes.max() - RIGHT_ANGLE_TOLERANCE
+    return int(np.argmax(is_near_max))
 
 
 def _resolve_slit_fwhm(
