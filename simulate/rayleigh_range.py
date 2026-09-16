@@ -28,9 +28,92 @@ def locate_rayleigh_range(
     # a NamedTuple or dataclass because neither idiom appears anywhere else
     # in this codebase.
 
-    # FOV-02: 06-02 Task 1 inserts the full validation block at this seam.
     positions_um = np.asarray(positions_um, dtype=np.float64)
     widths_um = np.asarray(widths_um, dtype=np.float64)
+
+    # ASVS V5: validate both array parameters before any waist search runs.
+    # Three sequential stages, not one flat list, because later checks are
+    # undefined on inputs the earlier ones reject -- you cannot meaningfully
+    # diff a 2-D array, and you cannot pair-index arrays of different
+    # lengths. Within each stage every offender is collected and named in
+    # one message, the same idiom `beam_profile.py` already uses.
+
+    # Stage A -- shape.
+    problems: list[str] = []
+    if positions_um.ndim != 1:
+        problems.append(f"positions_um must be 1-D, got ndim={positions_um.ndim}")
+    if widths_um.ndim != 1:
+        problems.append(f"widths_um must be 1-D, got ndim={widths_um.ndim}")
+    if problems:
+        raise ValueError("locate_rayleigh_range: " + "; ".join(problems))
+
+    # Stage B -- pairing.
+    problems = []
+    if positions_um.shape != widths_um.shape:
+        problems.append(
+            "positions_um and widths_um must have the same length, got "
+            f"positions_um.size={positions_um.size}, widths_um.size={widths_um.size}"
+        )
+    if positions_um.size == 0:
+        problems.append("positions_um and widths_um must not be empty")
+    if problems:
+        raise ValueError("locate_rayleigh_range: " + "; ".join(problems))
+
+    # Stage C -- content.
+    problems = []
+    if not np.isfinite(positions_um).all():
+        problems.append("positions_um must contain only finite values")
+    # This is the contract measure_beam_width_profile already guarantees
+    # (positions_um[i] == i * dz), asserted here because the outward walks
+    # read positions by index and a scrambled or duplicated position array
+    # would produce a boundary that is arithmetically valid and physically
+    # meaningless. A length-1 array trivially satisfies this: np.diff of it
+    # is empty and np.all([]) is True, which is intended -- a single-sample
+    # profile is well-formed input.
+    elif not np.all(np.diff(positions_um) > 0):
+        problems.append("positions_um must be strictly ascending")
+
+    measured = ~np.isnan(widths_um)
+    if not measured.any():
+        # FOV-02: RESEARCH Pitfall 1 -- without this guard, the
+        # np.nanargmin call below raises NumPy's own
+        # `ValueError: All-NaN slice encountered`, which names neither the
+        # parameter nor the caller (reproduced during planning).
+        #
+        # This message is deliberately kept SEPARATE from the array-too-short
+        # message Task 2 adds (RESEARCH Open Question 1), because "increase
+        # psf_size_z" is actively wrong advice for a profile in which
+        # nothing was measurable at any position -- a longer axial array
+        # yields more NaN, not a crossing. Phase 5's own warning already
+        # named every unmeasurable position, so the caller has the detail;
+        # what this message adds is the correct remedy: the lateral
+        # measurement window, not the axial array.
+        problems.append(
+            "widths_um is entirely NaN -- every position is unmeasurable, so no "
+            "waist can be located; increase psf_size_xy or illumination_na when "
+            "generating the beam-width profile"
+        )
+    else:
+        bad = measured & (~np.isfinite(widths_um) | (widths_um <= 0.0))
+        if bad.any():
+            # The sqrt(2) threshold is computed from the waist width, so a
+            # zero waist makes the threshold zero and the first sample
+            # examined on each side satisfies the crossing test immediately,
+            # returning a boundary equal to the waist position -- a
+            # plausible-looking number with no physical meaning.
+            offending = [
+                round(float(v), 6) for v in positions_um[bad]
+            ]
+            problems.append(
+                "widths_um must be positive and finite at every measured "
+                f"position, offending position(s) (um): {offending!r}"
+            )
+
+    # NaN among otherwise valid widths is NOT rejected -- it is a
+    # documented, legitimate Phase 5 output for an unmeasurable position,
+    # and D-08 requires the walk to skip it.
+    if problems:
+        raise ValueError("locate_rayleigh_range: " + "; ".join(problems))
 
     # D-06: the waist is the NaN-ignoring minimum of the measured profile,
     # chosen over any fitted minimum so the number stays grounded in what

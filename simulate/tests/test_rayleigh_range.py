@@ -152,6 +152,106 @@ class RayleighRangeTests(unittest.TestCase):
         self.assertAlmostEqual(right_half, 5.433, delta=0.05)
         self.assertGreater(abs(left_half - right_half), 1.0)
 
+    def test_rejects_malformed_position_and_width_arrays_before_searching_for_a_waist(self):
+        # ASVS V5: every malformed (positions_um, widths_um) pair must raise
+        # before any waist search runs, each naming the offending
+        # parameter(s).
+        cases = [
+            ("2-D positions", np.zeros((2, 2)), np.zeros((2, 2)), ["positions_um", "widths_um"]),
+            (
+                "length mismatch",
+                np.array([0.0, 0.3, 0.6, 0.9, 1.2]),
+                np.array([1.0, 1.0, 1.0, 1.0]),
+                ["positions_um", "widths_um"],
+            ),
+            ("both empty", np.array([]), np.array([]), ["positions_um", "widths_um"]),
+            (
+                "repeated position",
+                np.array([0.0, 0.3, 0.3, 0.9]),
+                np.array([1.0, 0.9, 1.0, 1.5]),
+                ["positions_um"],
+            ),
+            (
+                "descending step",
+                np.array([0.0, 0.6, 0.3]),
+                np.array([1.0, 0.9, 1.5]),
+                ["positions_um"],
+            ),
+            (
+                "NaN in positions",
+                np.array([0.0, 0.3, np.nan]),
+                np.array([1.0, 0.9, 1.5]),
+                ["positions_um"],
+            ),
+            (
+                "inf in positions",
+                np.array([0.0, 0.3, np.inf]),
+                np.array([1.0, 0.9, 1.5]),
+                ["positions_um"],
+            ),
+            (
+                "zero width",
+                np.array([0.0, 0.3, 0.6]),
+                np.array([1.0, 0.0, 1.5]),
+                ["widths_um"],
+            ),
+            (
+                "negative width",
+                np.array([0.0, 0.3, 0.6]),
+                np.array([1.0, -0.5, 1.5]),
+                ["widths_um"],
+            ),
+            (
+                "inf width",
+                np.array([0.0, 0.3, 0.6]),
+                np.array([1.0, np.inf, 1.5]),
+                ["widths_um"],
+            ),
+        ]
+        for label, positions_um, widths_um, must_contain in cases:
+            with self.subTest(case=label):
+                with self.assertRaisesRegex(ValueError, "locate_rayleigh_range: "):
+                    locate_rayleigh_range(positions_um, widths_um)
+                try:
+                    locate_rayleigh_range(positions_um, widths_um)
+                except ValueError as exc:
+                    text = str(exc)
+                    for token in must_contain:
+                        self.assertIn(token, text)
+
+    def test_names_every_offending_array_in_one_error(self):
+        positions_um = np.array([0.0, 0.6, 0.3])
+        widths_um = np.full(3, np.nan)
+        with self.assertRaises(ValueError) as ctx:
+            locate_rayleigh_range(positions_um, widths_um)
+        text = str(ctx.exception)
+        self.assertIn("positions_um", text)
+        self.assertIn("widths_um", text)
+
+    def test_an_entirely_unmeasurable_profile_names_the_lateral_window_not_the_axial_array(self):
+        # This is the one input shape D-09/D-10 do not walk through -- giving
+        # it the array-too-short remedy would send the caller to lengthen an
+        # axis that is not the problem.
+        positions_um = np.arange(9) * 0.3
+        widths_um = np.full(9, np.nan)
+        with self.assertRaises(ValueError) as ctx:
+            locate_rayleigh_range(positions_um, widths_um)
+        text = str(ctx.exception)
+        self.assertIn("widths_um", text)
+        self.assertIn("psf_size_xy", text)
+        self.assertNotIn("psf_size_z", text)
+        self.assertNotIn("All-NaN slice encountered", text)
+
+    def test_nan_among_valid_widths_is_accepted_not_rejected(self):
+        # Pins the boundary between "malformed input" and "legitimate data
+        # gap" so a later hardening pass cannot tighten the guard into
+        # rejecting D-08's own case.
+        positions_um = np.arange(7, dtype=float) * 0.3
+        widths_um = np.array([2.0, 1.4, 1.0, np.nan, 1.05, 1.5, 2.0])
+        waist, left, right = locate_rayleigh_range(positions_um, widths_um)
+        self.assertLess(left, waist)
+        self.assertLess(waist, right)
+
     def test_module_imports_are_confined_to_numpy(self):
         # The structural half of the no-fitted-model prohibition (D-07).
         # This mechanically forbids pulling in a root-finder, a smoothing
