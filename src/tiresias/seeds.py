@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import psfmodels as pm
-from scipy.ndimage import rotate
+from scipy.ndimage import affine_transform, zoom
 from tifffile import imread
 
 RIGHT_ANGLE_TOLERANCE = 1e-6
@@ -152,40 +152,153 @@ def load_psf_seed(path: str | Path, shape: tuple[int, int, int]) -> np.ndarray:
     return normalise_psf(fitted)
 
 
-def rotate_illumination_psf(illumination: np.ndarray, angle: float) -> np.ndarray:
-    """Rotate illumination coordinates in the Z/X plane."""
-    right_angle_units = angle / 90.0
-    if abs(right_angle_units - round(right_angle_units)) <= RIGHT_ANGLE_TOLERANCE:
-        rotated = np.rot90(illumination, k=int(round(right_angle_units)), axes=(0, 2))
-        return _center_crop_or_pad(rotated, illumination.shape)
-    return rotate(
-        illumination,
-        angle=angle,
-        axes=(0, 2),
-        reshape=False,
+def _rotation_matrix(polar_deg: float, azimuthal_deg: float) -> np.ndarray:
+    """Build the (Z, Y, X)-ordered rotation matrix ``Rz(azimuthal) @ Ry(polar)``."""
+    # D-01: polar_deg is measured from the pre-rotation +Z propagation axis;
+    # azimuthal_deg is measured from +X in the X-Y plane -- the standard
+    # physics spherical convention, embedded into this project's (Z, Y, X)
+    # array index order.
+    # D-02: both angles are in degrees, not radians, matching how
+    # light_sheet_angle was always specified/documented.
+    if not math.isfinite(polar_deg):
+        raise ValueError(f"polar_deg must be finite, got {polar_deg!r}")
+    if not math.isfinite(azimuthal_deg):
+        raise ValueError(f"azimuthal_deg must be finite, got {azimuthal_deg!r}")
+    theta = np.radians(polar_deg)
+    phi = np.radians(azimuthal_deg)
+    ry = np.array(
+        [
+            [np.cos(theta), 0.0, -np.sin(theta)],
+            [0.0, 1.0, 0.0],
+            [np.sin(theta), 0.0, np.cos(theta)],
+        ]
+    )
+    rz = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, np.cos(phi), np.sin(phi)],
+            [0.0, -np.sin(phi), np.cos(phi)],
+        ]
+    )
+    return rz @ ry
+
+
+def _spherical_direction(polar_deg: float, azimuthal_deg: float) -> np.ndarray:
+    """Return the (Z, Y, X) propagation unit vector for (polar_deg, azimuthal_deg)."""
+    # D-03: (90.0, 0.0) is the fixed reference point mapping to the old
+    # broadside light_sheet_angle=90.0 default, yielding (Z=0, Y=0, X=1). This
+    # is the single source of truth for the direction vector -- callers never
+    # re-derive the trig themselves.
+    return _rotation_matrix(polar_deg, azimuthal_deg) @ np.array([1.0, 0.0, 0.0])
+
+
+def _match_legacy_cardinal(direction: np.ndarray) -> int | None:
+    """Return the numpy.rot90 ``k`` for a legacy cardinal direction, else None."""
+    # Matches on the direction vector, not the (polar_deg, azimuthal_deg) pair,
+    # so pole degeneracy at polar_deg 0/180 needs no special-case branch.
+    # RIGHT_ANGLE_TOLERANCE is now the direction-space analogue of the old
+    # angle-space tolerance the pre-v1.1 fast path used.
+    legacy_directions = (
+        (np.array([1.0, 0.0, 0.0]), 0),
+        (np.array([0.0, 0.0, 1.0]), 1),
+        (np.array([-1.0, 0.0, 0.0]), 2),
+        (np.array([0.0, 0.0, -1.0]), 3),
+    )
+    for legacy_direction, k in legacy_directions:
+        if np.max(np.abs(direction - legacy_direction)) <= RIGHT_ANGLE_TOLERANCE:
+            return k
+    return None
+
+
+def _legacy_rot90_rotation(illumination: np.ndarray, k: int) -> np.ndarray:
+    """Delegate to the exact pre-v1.1 rotation code, unchanged (ROT-04)."""
+    rotated = np.rot90(illumination, k=k, axes=(0, 2))
+    return _center_crop_or_pad(rotated, illumination.shape)
+
+
+def _rotate_isotropic(
+    illumination: np.ndarray, rotation: np.ndarray, dxy: float, dz: float
+) -> np.ndarray:
+    """Rotate a physically anisotropic volume via an isotropic resample round trip."""
+    # D-04: resample onto an isotropic grid (index-space rotation is only
+    # physically valid once voxels are cubic), rotate there, then resample
+    # back to the native (dz, dxy) grid. The single-combined-affine
+    # alternative (rotation + anisotropic scaling in one transform) was
+    # explicitly rejected as the primary approach.
+    z_zoom = dz / dxy
+    iso = zoom(
+        illumination, zoom=(z_zoom, 1.0, 1.0), order=1, mode="constant", cval=0.0, prefilter=False
+    )
+
+    # rotation is orthogonal, so its transpose is the exact inverse;
+    # affine_transform's matrix is the output->input ("pull") map, not the
+    # forward rotation -- passing rotation itself would silently mirror the
+    # result.
+    matrix = rotation.T
+    center = (np.asarray(iso.shape, dtype=np.float64) - 1.0) / 2.0
+    offset = center - matrix @ center
+    rotated_iso = affine_transform(
+        iso,
+        matrix,
+        offset=offset,
+        output_shape=iso.shape,
         order=1,
         mode="constant",
         cval=0.0,
         prefilter=False,
     )
 
+    back = zoom(
+        rotated_iso,
+        zoom=(dxy / dz, 1.0, 1.0),
+        order=1,
+        mode="constant",
+        cval=0.0,
+        prefilter=False,
+    )
+    # The two independent zoom-shape roundings are not guaranteed inverses of
+    # each other, so always finish with the shared crop/pad helper rather than
+    # assuming shape equality.
+    return _center_crop_or_pad(back, illumination.shape)
 
-def _resolve_slit_axis(light_sheet_angle: float, slit_axis: int | None = None) -> int:
+
+def rotate_illumination(
+    illumination: np.ndarray,
+    *,
+    polar_deg: float,
+    azimuthal_deg: float,
+    dxy: float,
+    dz: float,
+) -> np.ndarray:
+    """Rotate the pre-rotation illumination PSF to the requested 3D direction.
+
+    Delegates to the exact, unmodified legacy ``numpy.rot90`` fast path at the
+    four legacy cardinal directions (bit-identical output, ROT-04); every
+    other direction -- including new azimuthal orientations the old 1-DOF API
+    could never reach -- routes through the isotropic resample/rotate/resample
+    pipeline (ROT-02).
+    """
+    rotation = _rotation_matrix(polar_deg, azimuthal_deg)
+    direction = rotation @ np.array([1.0, 0.0, 0.0])
+    k = _match_legacy_cardinal(direction)
+    if k is not None:
+        return _legacy_rot90_rotation(illumination, k)
+    return _rotate_isotropic(illumination, rotation, dxy, dz)
+
+
+def _resolve_slit_axis(direction: np.ndarray, slit_axis: int | None = None) -> int:
     """Resolve which pre-rotation illumination axis the slit gate narrows."""
-    # D-03: an explicit override bypasses auto-detection entirely. Axis 1 (Y) is
-    # deliberately rejected: rotate_illumination_psf only rotates the Z/X plane
-    # (axes=(0, 2)), so axis 1 is never touched by rotation and gating it would
-    # not correspond to any rolling-shutter direction.
+    # D-05: an explicit override bypasses auto-detection entirely, now
+    # accepting all three axes. Otherwise the resolver snaps the 3D
+    # propagation direction to whichever single coordinate axis it is closest
+    # to and gates along that one pre-rotation axis -- numpy.argmax's
+    # documented first-occurrence behavior supplies the tie-break for
+    # directions equidistant between two axes with no extra code.
     if slit_axis is not None:
-        if slit_axis not in (0, 2):
-            raise ValueError(f"slit_axis must be 0 or 2, got {slit_axis!r}")
+        if slit_axis not in (0, 1, 2):
+            raise ValueError(f"slit_axis must be 0, 1, or 2, got {slit_axis!r}")
         return slit_axis
-    # D-01: unconditional round-to-nearest-quadrant, deliberately unlike
-    # rotate_illumination_psf's RIGHT_ANGLE_TOLERANCE-gated fast path. Python's
-    # round-half-to-even applies at exact tie angles (e.g. 45.0, 135.0); plan
-    # 01-03 pins that contract with a dedicated test.
-    quadrant = int(round(light_sheet_angle / 90.0)) % 4
-    return 0 if quadrant % 2 == 0 else 2
+    return int(np.argmax(np.abs(direction)))
 
 
 def _resolve_slit_fwhm(
@@ -277,7 +390,8 @@ def generate_psf_seed(
     psf_size_z: int,
     psf_size_xy: int,
     background: float,
-    light_sheet_angle: float = 90.0,
+    polar_deg: float = 90.0,
+    azimuthal_deg: float = 0.0,
     slit_width: float | None = None,
     slit_axis: int | None = None,
     slit_width_px: int | None = None,
@@ -298,10 +412,18 @@ def generate_psf_seed(
             f"Unsupported psf_mode={psf_mode!r}; expected one of 'single', 'light_sheet', 'aslm'"
         )
 
+    # D-07/T-07-02: validate before generating any PSF, extended here to the
+    # non-finite-angle check -- a NaN/inf polar_deg or azimuthal_deg must fail
+    # loudly rather than flow through normalise_psf's nan_to_num into an
+    # all-zero seed.
+    direction: np.ndarray | None = None
+    if psf_mode != "single":
+        direction = _spherical_direction(polar_deg, azimuthal_deg)
+
     gate_axis: int | None = None
     slit_fwhm: float | None = None
     if psf_mode == "aslm":  # D-07: validate before generating any PSF
-        gate_axis = _resolve_slit_axis(light_sheet_angle, slit_axis)
+        gate_axis = _resolve_slit_axis(direction, slit_axis)
         slit_fwhm = _resolve_slit_fwhm(slit_width, slit_width_px, dxy)
 
     detection = generate_theoretical_psf(
@@ -352,5 +474,7 @@ def generate_psf_seed(
     )
     if psf_mode == "aslm":
         illumination = _apply_aslm_slit_gate(illumination, gate_axis, slit_fwhm, dxy, dz)
-    rotated = rotate_illumination_psf(illumination, light_sheet_angle)
+    rotated = rotate_illumination(
+        illumination, polar_deg=polar_deg, azimuthal_deg=azimuthal_deg, dxy=dxy, dz=dz
+    )
     return normalise_psf(detection * rotated)
