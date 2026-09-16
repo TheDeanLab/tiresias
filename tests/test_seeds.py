@@ -1043,6 +1043,82 @@ class SeedTests(unittest.TestCase):
                 )
                 self.assertEqual(actual_axis, expected_axis)
 
+    # Plan 07-03 Task 1 (ROT-02): STATE.md records rotation-formula
+    # validation against dz != dxy as this phase's principal research risk,
+    # requiring an explicit physical-versus-index-space regression test.
+    # 07-RESEARCH.md's "Architecture Patterns" Pattern 1 empirically measured
+    # 0.0102 physical-pipeline error and 0.641 naive-rotation error for this
+    # exact recipe; this test makes that verification permanent.
+    def test_rotation_is_physical_not_index_space_under_anisotropic_voxels(self):
+        dxy = 0.108
+        dz = 0.300
+        z = np.arange(61, dtype=np.float64)
+        # Intensity varies only along Z as a sigma=1.0um Gaussian, constant
+        # across Y/X -- dz (0.300) samples Z 2.78x more coarsely than dxy
+        # (0.108) samples the lateral axes. This anisotropy is the whole
+        # point of the fixture and must not be changed to equal spacings.
+        profile = np.exp(-0.5 * (((z - 30) * dz) / 1.0) ** 2).astype(np.float32)
+        volume = np.broadcast_to(
+            profile[:, None, None], (61, 61, 61)
+        ).astype(np.float32).copy()
+
+        # (polar_deg=90, azimuthal_deg=90) is pure +Y -- deliberately NOT one
+        # of the four legacy cardinal directions, so the call exercises the
+        # general _rotate_isotropic path rather than the np.rot90 fast path.
+        # Asserted explicitly so a future change routing +Y through the fast
+        # path cannot make this test silently vacuous.
+        direction = seeds._spherical_direction(90.0, 90.0)
+        self.assertIsNone(seeds._match_legacy_cardinal(direction))
+
+        rotated = seeds.rotate_illumination(
+            volume, polar_deg=90.0, azimuthal_deg=90.0, dxy=dxy, dz=dz
+        )
+        lineout = rotated[30, :, 30]
+        expected = np.exp(-0.5 * (((np.arange(61) - 30) * dxy) / 1.0) ** 2)
+        physical_error = float(np.abs(lineout - expected).max())
+        # Measured 0.0102 (07-RESEARCH.md) / 0.01016 (this session, this
+        # commit -- see 07-03-SUMMARY.md); 0.05 leaves headroom for
+        # array-size differences while staying far below the naive error.
+        # Do not widen this bound if it fails -- the pipeline is wrong; check
+        # `matrix = rotation.T` and grid_mode consistency in
+        # _rotate_isotropic first.
+        self.assertLessEqual(physical_error, 0.05)
+
+        # Contrast arm: a pure index-space rotation mapping Z onto Y with no
+        # spacing correction -- exactly what the pre-v1.1 code did in its own
+        # plane. It transplants 61 samples spaced at 0.300um onto an axis
+        # spaced at 0.108um, so the beam appears 2.78x too narrow -- the
+        # failure mode ROT-02 exists to eliminate. Without this arm the
+        # tolerance assertion alone would not distinguish a correct pipeline
+        # from a lucky one.
+        naive = np.rot90(volume, k=1, axes=(0, 1))
+        naive_lineout = naive[30, :, 30]
+        naive_error = float(np.abs(naive_lineout - expected).max())
+        self.assertGreaterEqual(naive_error, 0.3)
+
+    def test_azimuthal_has_no_effect_at_the_poles(self):
+        # 07-RESEARCH.md Pitfall 4: this invariance is a property of matching
+        # on the direction vector rather than the raw angle pair, so it needs
+        # no special-case branch. This test exists so that adding such a
+        # branch -- which would be incorrect -- goes red.
+        dxy = 0.108
+        dz = 0.300
+        z = np.arange(15, dtype=np.float64)
+        profile = np.exp(-0.5 * (((z - 7) * dz) / 1.0) ** 2).astype(np.float32)
+        volume = np.broadcast_to(
+            profile[:, None, None], (15, 15, 15)
+        ).astype(np.float32).copy()
+
+        for polar_deg in (0.0, 180.0):
+            with self.subTest(polar_deg=polar_deg):
+                first = seeds.rotate_illumination(
+                    volume, polar_deg=polar_deg, azimuthal_deg=45.0, dxy=dxy, dz=dz
+                )
+                second = seeds.rotate_illumination(
+                    volume, polar_deg=polar_deg, azimuthal_deg=200.0, dxy=dxy, dz=dz
+                )
+                np.testing.assert_array_equal(first, second)
+
 
 if __name__ == "__main__":
     unittest.main()
