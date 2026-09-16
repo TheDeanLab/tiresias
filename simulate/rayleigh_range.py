@@ -19,6 +19,9 @@ def locate_rayleigh_range(
     Returns `(waist_position_um, left_position_um, right_position_um)`, all
     in micrometres. `left` is toward decreasing Z, `right` toward increasing
     Z.
+
+    Raises `ValueError` when either outward walk reaches an array edge
+    without finding the sqrt(2)x-waist crossing.
     """
     # D-05: three positions only, no waist width. D-05 mandates the waist
     # position plus both side positions; the waist width is one
@@ -162,7 +165,44 @@ def locate_rayleigh_range(
     left_position_um = _walk_outward(range(waist_index, -1, -1))
     right_position_um = _walk_outward(range(waist_index, positions_um.size))
 
-    # D-09: 06-02 Task 2 adds the ValueError for a None side here.
+    unreachable: list[str] = []
+    if left_position_um is None:
+        # Round for display only -- positions_um itself stays exact.
+        # RESEARCH Pitfall 2, mirroring beam_profile.py's identical idiom:
+        # float64 multiplication of index * dz can produce artifacts like
+        # 3 * 0.3 == 0.8999999999999999, and without rounding this message
+        # would name that artifact instead of "0.9" or "1.8".
+        unreachable.append(
+            f"Z={round(float(positions_um[0]), 6)} um (walking toward decreasing Z)"
+        )
+    if right_position_um is None:
+        unreachable.append(
+            f"Z={round(float(positions_um[-1]), 6)} um (walking toward increasing Z)"
+        )
+
+    if unreachable:
+        # D-09/D-10: this single branch serves both decisions -- running out
+        # of samples and a NaN run reaching the edge are indistinguishable
+        # for this purpose, and `_walk_outward` deliberately returns the
+        # same None for both.
+        #
+        # FOV-02: deliberately NOT done here -- no clamping to
+        # positions_um[0]/positions_um[-1], no linear extrapolation past the
+        # sampled range, no mirroring of the side that did succeed, and no
+        # NaN return. A caller who receives a number from this function has
+        # a number the simulation actually contains. At illumination_na=0.30
+        # with the project's default 61-slice window the true crossing lies
+        # outside the array on both sides, and clamping would report an
+        # 18 um FOV extent that is an artifact of the window size rather
+        # than of the optics -- which is exactly the Phase 8 figure this
+        # guard protects.
+        raise ValueError(
+            "locate_rayleigh_range: Rayleigh-range crossing not found before "
+            "array edge at " + ", ".join(unreachable) +
+            "; increase psf_size_z (or dz) when generating the beam-width "
+            "profile."
+        )
+
     # D-05: the two sides are reported separately and are never averaged or
     # collapsed into one number here -- choosing symmetric-average versus
     # full-range is Phase 8's call.

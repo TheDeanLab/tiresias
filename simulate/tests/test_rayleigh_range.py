@@ -252,6 +252,64 @@ class RayleighRangeTests(unittest.TestCase):
         self.assertLess(left, waist)
         self.assertLess(waist, right)
 
+    def test_a_profile_too_short_to_contain_the_crossing_raises_instead_of_clamping(self):
+        # ROADMAP Success Criterion 3. At illumination_na=0.30 the waist
+        # width is 0.97032 um so the threshold is 1.37224 um, and the
+        # largest width anywhere in the 61-slice window stays below it --
+        # while NA=0.35 at the same parameters does cross, which is why
+        # 06-01's NA sweep starts at 0.35.
+        positions_um, widths_um = _measure(0.30)
+        self.assertTrue(np.isfinite(widths_um).all())
+
+        with self.assertRaises(ValueError) as ctx:
+            locate_rayleigh_range(positions_um, widths_um)
+        text = str(ctx.exception)
+        for token in ("Z=0.0 um", "Z=18.0 um", "psf_size_z", "dz"):
+            self.assertIn(token, text)
+
+    def test_the_named_edge_position_is_rounded_for_display_only(self):
+        # RESEARCH Pitfall 2.
+        positions_um = np.arange(7, dtype=float) * 0.3
+        widths_um = np.array([1.2, 1.15, 1.1, 1.0, 1.1, 1.15, 1.2])
+
+        with self.assertRaises(ValueError) as ctx:
+            locate_rayleigh_range(positions_um, widths_um)
+        text = str(ctx.exception)
+        self.assertIn("Z=1.8 um", text)
+        self.assertNotIn("1.7999999999999998", text)
+
+        # The rounding lives in the message, never in the data.
+        self.assertEqual(positions_um[6], 6 * 0.3)
+
+    def test_only_the_side_that_failed_is_named(self):
+        # D-09's per-side reporting.
+        positions_um = np.arange(7, dtype=float) * 0.3
+        widths_um = np.array([1.2, 1.15, 1.1, 1.0, 1.1, 1.5, 2.0])
+
+        with self.assertRaises(ValueError) as ctx:
+            locate_rayleigh_range(positions_um, widths_um)
+        text = str(ctx.exception)
+        self.assertIn("Z=0.0 um", text)
+        self.assertNotIn("Z=1.8 um", text)
+        self.assertNotIn("1.4356", text)
+
+    def test_nothing_is_returned_when_a_walk_reaches_an_edge(self):
+        # Mirrors
+        # test_unmeasurable_positions_are_never_clamped_or_extrapolated in
+        # simulate/tests/test_beam_profile.py.
+        positions_um, widths_um = _measure(0.30)
+        with self.assertRaises(ValueError) as ctx:
+            result = locate_rayleigh_range(positions_um, widths_um)
+            self.fail(f"unexpected return value {result!r}")
+        self.assertIs(type(ctx.exception), ValueError)
+
+        synthetic_positions_um = np.arange(7, dtype=float) * 0.3
+        synthetic_widths_um = np.array([1.2, 1.15, 1.1, 1.0, 1.1, 1.15, 1.2])
+        with self.assertRaises(ValueError) as ctx:
+            result = locate_rayleigh_range(synthetic_positions_um, synthetic_widths_um)
+            self.fail(f"unexpected return value {result!r}")
+        self.assertIs(type(ctx.exception), ValueError)
+
     def test_module_imports_are_confined_to_numpy(self):
         # The structural half of the no-fitted-model prohibition (D-07).
         # This mechanically forbids pulling in a root-finder, a smoothing
