@@ -1119,6 +1119,136 @@ class SeedTests(unittest.TestCase):
                 )
                 np.testing.assert_array_equal(first, second)
 
+    # Plan 07-03 Task 2 (ROT-03): the mirror image of the existing axis-0 and
+    # axis-2 gate-axis cases, and the first gate-axis case the pre-v1.1
+    # one-degree-of-freedom API could not express at all.
+    def test_gate_axis_resolves_to_y_for_out_of_plane_direction(self):
+        captured = self._capture_aslm_gate(polar_deg=90.0, azimuthal_deg=90.0)
+        gated = captured["gated"]
+        axis0_profile = gated.sum(axis=(1, 2))
+        axis1_profile = gated.sum(axis=(0, 2))
+        axis2_profile = gated.sum(axis=(0, 1))
+
+        self.assertEqual(int(np.argmax(axis1_profile)), 4)
+        self.assertLess(axis1_profile[0], axis1_profile[4])
+        self.assertTrue(np.allclose(axis0_profile, axis0_profile[0]))
+        self.assertTrue(np.allclose(axis2_profile, axis2_profile[0]))
+
+        # Exact-tie sub-case: (polar_deg=90, azimuthal_deg=45) has equal Y
+        # and X direction components. D-05's tie-break resolves this to axis
+        # 1 (Y) -- pinned here by computing the expected axis directly from
+        # the direction vector, rather than hardcoding it blind, so the test
+        # stays honest if the direction convention were ever changed. A
+        # future hand-rolled tie-break rule that disagrees with this goes
+        # red. (07-02-SUMMARY.md: the actual tie-break is a
+        # RIGHT_ANGLE_TOLERANCE-based snap-before-argmax, not the bare
+        # numpy.argmax 07-RESEARCH.md's table assumed -- but for this
+        # specific tie, both formulations agree on axis 1, verified directly
+        # against seeds._resolve_slit_axis below.)
+        tie_direction = seeds._spherical_direction(90.0, 45.0)
+        expected_tie_axis = int(np.argmax(np.abs(tie_direction)))
+        self.assertEqual(expected_tie_axis, 1)
+        self.assertEqual(seeds._resolve_slit_axis(tie_direction), 1)
+
+        tie_captured = self._capture_aslm_gate(polar_deg=90.0, azimuthal_deg=45.0)
+        tie_gated = tie_captured["gated"]
+        tie_axis0_profile = tie_gated.sum(axis=(1, 2))
+        tie_axis1_profile = tie_gated.sum(axis=(0, 2))
+        tie_axis2_profile = tie_gated.sum(axis=(0, 1))
+
+        self.assertEqual(int(np.argmax(tie_axis1_profile)), 4)
+        self.assertLess(tie_axis1_profile[0], tie_axis1_profile[4])
+        self.assertTrue(np.allclose(tie_axis0_profile, tie_axis0_profile[0]))
+        self.assertTrue(np.allclose(tie_axis2_profile, tie_axis2_profile[0]))
+
+    def test_slit_axis_override_accepts_y(self):
+        # Auto-resolved axis for (polar_deg=90, azimuthal_deg=0) is 2 (X);
+        # the override forces axis 1 (Y) instead.
+        captured = self._capture_aslm_gate(
+            polar_deg=90.0, azimuthal_deg=0.0, slit_axis=1
+        )
+        gated = captured["gated"]
+        axis0_profile = gated.sum(axis=(1, 2))
+        axis1_profile = gated.sum(axis=(0, 2))
+        axis2_profile = gated.sum(axis=(0, 1))
+
+        self.assertEqual(int(np.argmax(axis1_profile)), 4)
+        self.assertLess(axis1_profile[0], axis1_profile[4])
+        self.assertTrue(np.allclose(axis0_profile, axis0_profile[0]))
+        self.assertTrue(np.allclose(axis2_profile, axis2_profile[0]))
+
+        # D-09: the widened {0,1,2} override range did not disturb the
+        # always-via-dxy conversion rule -- slit_width_px=2 at dxy=0.108 must
+        # gate the identical axis-1 marginal as the equivalent
+        # slit_width=2*dxy call.
+        captured_px = self._capture_aslm_gate(
+            polar_deg=90.0,
+            azimuthal_deg=0.0,
+            slit_axis=1,
+            slit_width=None,
+            slit_width_px=2,
+        )
+        np.testing.assert_array_equal(captured_px["gated"], gated)
+
+    def test_non_finite_rotation_angles_reject_before_any_psf_generation(self):
+        # normalise_psf already applies nan_to_num, so without this guard a
+        # NaN/inf angle would produce a silently all-zero seed flowing into
+        # blind-RL estimation looking valid -- the same failure class the
+        # existing D-08 slit-energy guard addresses. Covers both rotating
+        # modes (light_sheet and aslm).
+        detection = np.ones((5, 5, 5), dtype=np.float32)
+        base_kwargs = dict(
+            na=1.0,
+            detection_na=1.0,
+            illumination_na=0.2,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=3,
+            psf_model="vectorial",
+            dxy=0.108,
+            dz=0.3,
+            psf_size_z=5,
+            psf_size_xy=5,
+            background=0.0,
+        )
+        cases = [
+            (
+                "light_sheet, nan polar_deg",
+                "light_sheet",
+                {"polar_deg": float("nan"), "azimuthal_deg": 0.0},
+                "polar_deg must be finite",
+            ),
+            (
+                "aslm, inf azimuthal_deg",
+                "aslm",
+                {
+                    "polar_deg": 90.0,
+                    "azimuthal_deg": float("inf"),
+                    "slit_width": 0.2,
+                },
+                "azimuthal_deg must be finite",
+            ),
+        ]
+        for label, psf_mode, extra_kwargs, expected_message in cases:
+            with self.subTest(label=label):
+                with mock.patch.object(
+                    seeds,
+                    "generate_theoretical_psf",
+                    return_value=detection,
+                ) as generate_theoretical_psf:
+                    with self.assertRaisesRegex(ValueError, expected_message):
+                        seeds.generate_psf_seed(
+                            psf_mode=psf_mode, **base_kwargs, **extra_kwargs
+                        )
+                    generate_theoretical_psf.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
