@@ -310,6 +310,70 @@ class RayleighRangeTests(unittest.TestCase):
             self.fail(f"unexpected return value {result!r}")
         self.assertIs(type(ctx.exception), ValueError)
 
+    def test_a_waist_at_the_first_index_fails_that_side_without_an_index_error(self):
+        # RESEARCH Pitfall 4. Nothing in D-06 guarantees an interior waist,
+        # so the walk toward the near edge examines exactly one sample; the
+        # danger is an IndexError from indexing an empty walk rather than a
+        # wrong number.
+        positions_um = np.arange(21, dtype=np.float64) * 0.5
+        widths_um = 1.0 + 0.25 * positions_um**2
+
+        with self.assertRaises(ValueError) as ctx:
+            locate_rayleigh_range(positions_um, widths_um)
+        self.assertIs(type(ctx.exception), ValueError)
+        text = str(ctx.exception)
+        self.assertIn("Z=0.0 um", text)
+        self.assertIn("decreasing Z", text)
+        self.assertNotIn("Z=10.0 um", text)
+
+    def test_a_waist_at_the_last_index_fails_that_side_without_an_index_error(self):
+        # The mirror -- both directions are tested because the two walks are
+        # separate code paths and a one-sided fix would pass the first test
+        # alone.
+        positions_um = np.arange(21, dtype=np.float64) * 0.5
+        widths_um = 1.0 + 0.25 * (10.0 - positions_um) ** 2
+
+        with self.assertRaises(ValueError) as ctx:
+            locate_rayleigh_range(positions_um, widths_um)
+        self.assertIs(type(ctx.exception), ValueError)
+        text = str(ctx.exception)
+        self.assertIn("Z=10.0 um", text)
+        self.assertIn("increasing Z", text)
+        self.assertNotIn("Z=0.0 um", text)
+
+    def test_a_nan_run_reaching_the_edge_names_the_array_edge_not_the_last_measured_sample(self):
+        # D-10, and the assertion that distinguishes this implementation
+        # from one that reports the last clean sample. D-09's wording names
+        # the array edge, and D-10 routes the NaN case through the identical
+        # branch precisely because an all-NaN tail and a too-short array are
+        # indistinguishable from inside this function.
+        positions_um = np.arange(41, dtype=np.float64) * 0.5
+        widths_um = 1.0 + 0.25 * (positions_um - 10.0) ** 2
+        widths_um[23:] = np.nan
+
+        with self.assertRaises(ValueError) as ctx:
+            locate_rayleigh_range(positions_um, widths_um)
+        text = str(ctx.exception)
+        self.assertIn("Z=20.0 um", text)
+        self.assertNotIn("Z=11.0 um", text)
+        self.assertNotIn("Z=11.5 um", text)
+
+    def test_a_single_sample_profile_is_well_formed_input_that_is_simply_too_short(self):
+        # The empty-category boundary: a length-1 profile is legal,
+        # well-formed input that simply cannot contain a crossing;
+        # conflating it with malformed input would send the caller to fix
+        # the wrong thing.
+        positions_um = np.array([0.0])
+        widths_um = np.array([1.0])
+
+        with self.assertRaises(ValueError) as ctx:
+            locate_rayleigh_range(positions_um, widths_um)
+        text = str(ctx.exception)
+        self.assertIn("Rayleigh-range crossing not found before array edge", text)
+        self.assertIn("Z=0.0 um", text)
+        self.assertNotIn("strictly ascending", text)
+        self.assertNotIn("empty", text)
+
     def test_module_imports_are_confined_to_numpy(self):
         # The structural half of the no-fitted-model prohibition (D-07).
         # This mechanically forbids pulling in a root-finder, a smoothing
