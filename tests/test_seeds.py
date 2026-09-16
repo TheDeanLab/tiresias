@@ -897,6 +897,72 @@ class SeedTests(unittest.TestCase):
             msg="too-narrow-slit ValueError must point the user at slit_width (G-01-24)",
         )
 
+    # Tracer (plan 07-02 Task 1): drives cli.estimate_psf_main twice -- once
+    # at an oblique 3D direction, once at the default -- through the real
+    # generate_psf_seed, proving the whole stack (CLI flag -> direction
+    # vector -> gate-axis resolver -> physical-space rotation -> normalized
+    # seed) end to end for a direction the old 1-DOF API could never reach.
+    def test_light_sheet_seed_at_oblique_3d_direction_end_to_end(self):
+        from tiresias import cli
+
+        def _capture_seed(*, psf_seed, **kwargs):
+            del kwargs
+            return psf_seed
+
+        common_argv = [
+            "--image-path",
+            "volume.tif",
+            "--output-path",
+            "estimated_psf.tif",
+            "--detection-na",
+            "1.0",
+            "--illumination-na",
+            "0.2",
+            "--wavelength",
+            "0.561",
+            "--ni",
+            "1.33",
+            "--ns",
+            "1.33",
+            "--dxy",
+            "0.108",
+            "--dz",
+            "0.3",
+            "--oversample-factor",
+            "1",
+            "--psf-size-z",
+            "15",
+            "--psf-size-xy",
+            "15",
+            "--psf-mode",
+            "light_sheet",
+        ]
+
+        seeds_by_key = {}
+        with mock.patch.object(cli, "imwrite"):
+            for extra_args, key in (
+                ([], "default"),
+                (
+                    ["--illumination-polar-deg", "60", "--illumination-azimuthal-deg", "35"],
+                    "oblique",
+                ),
+            ):
+                with mock.patch.object(
+                    cli, "estimate_psf_from_chunks", side_effect=_capture_seed
+                ) as estimate:
+                    cli.estimate_psf_main(common_argv + extra_args)
+                    seeds_by_key[key] = estimate.call_args.kwargs["psf_seed"]
+
+        default_seed = seeds_by_key["default"]
+        oblique_seed = seeds_by_key["oblique"]
+
+        self.assertEqual(oblique_seed.shape, (15, 15, 15))
+        self.assertEqual(oblique_seed.dtype, np.float32)
+        self.assertTrue(np.isfinite(oblique_seed).all())
+        self.assertAlmostEqual(float(oblique_seed.sum(dtype=np.float64)), 1.0, delta=1e-5)
+        self.assertGreater(int(np.count_nonzero(oblique_seed > 0)), 100)
+        self.assertFalse(np.allclose(oblique_seed, default_seed))
+
     # Contract with plan 07-02 Task 2: this test exercises the pre-v1.1 API
     # today (rotate_illumination_psf(volume, angle)). 07-02 rewires this test
     # in place, under the same name and against the same fixture, to call the
