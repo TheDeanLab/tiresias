@@ -27,6 +27,24 @@ def _measure(illumination_na: float) -> tuple[np.ndarray, np.ndarray]:
     return measure_beam_width_profile(illumination_na=illumination_na, **COMMON)
 
 
+def _synthetic_quadratic_profile(step: float) -> tuple[np.ndarray, np.ndarray]:
+    """A hand-authored convex width curve, not a measured beam profile.
+
+    Waist sits at exactly z = 10.0 um with width exactly 1.0 um, chosen so
+    the sqrt(2) threshold is exactly `np.sqrt(2.0)` and the analytic
+    crossings are `10.0 -/+ 2 * np.sqrt(np.sqrt(2.0) - 1.0)` =
+    8.712811... and 11.287189... um. Per RESEARCH Pitfall 5:
+    `locate_rayleigh_range`'s inputs are already two arrays, so its
+    interpolation behavior can be proven directly and deterministically on
+    this synthetic profile without paying for a PSF generation per case --
+    the one genuinely physics-backed test in this phase is 06-01's
+    NA-vs-FOV sweep, which needs real optics.
+    """
+    positions_um = np.arange(round(20.0 / step) + 1, dtype=np.float64) * step
+    widths_um = 1.0 + 0.25 * (positions_um - 10.0) ** 2
+    return positions_um, widths_um
+
+
 class RayleighRangeTests(unittest.TestCase):
     def test_locates_the_rayleigh_boundary_of_a_real_measured_beam_profile_end_to_end(self):
         positions_um, widths_um = measure_beam_width_profile(
@@ -373,6 +391,100 @@ class RayleighRangeTests(unittest.TestCase):
         self.assertIn("Z=0.0 um", text)
         self.assertNotIn("strictly ascending", text)
         self.assertNotIn("empty", text)
+
+    def test_a_nan_immediately_before_the_crossing_is_skipped_not_used_as_a_bracket(self):
+        # D-08, and the direct discriminator for RESEARCH Pitfall 3: NaN
+        # comparisons evaluate False in NumPy, so a naive port of
+        # beam_profile.py's _crossing() never registers the NaN as the
+        # crossing and therefore *looks* correct, while still handing it to
+        # the interpolation as the lower bracket endpoint -- producing a
+        # NaN boundary that no other test in this phase would catch.
+        positions_um, clean_widths_um = _synthetic_quadratic_profile(0.5)
+        _waist, _left, clean_right = locate_rayleigh_range(positions_um, clean_widths_um)
+
+        gapped_widths_um = clean_widths_um.copy()
+        gapped_widths_um[22] = np.nan
+        _waist, left, right = locate_rayleigh_range(positions_um, gapped_widths_um)
+
+        self.assertTrue(np.isfinite(right))
+        self.assertAlmostEqual(right, 11.203427124746190, places=9)
+        # Proves the NaN genuinely widened the interpolation bracket rather
+        # than being ignored outright.
+        self.assertGreater(abs(right - clean_right), 1e-6)
+        # The bracket spans the two nearest MEASURED samples (10.5, 11.5).
+        # A copied _crossing() would instead use the raw index-minus-one
+        # bracket, i.e. the NaN sample itself (position 11.0) as the lower
+        # endpoint, making `frac` NaN and the reported boundary NaN -- a
+        # case already excluded by the isfinite and pinned-value assertions
+        # above. (A literal "not between 11.0 and 11.5" check on the VALUE
+        # is not a usable discriminator here: (11.0, 11.5) is a strict
+        # subset of the valid (10.5, 11.5) span, so the correct answer,
+        # 11.2034..., necessarily falls inside it too.)
+        self.assertTrue(10.5 < right < 11.5)
+        # One side's gap must not perturb the other.
+        self.assertAlmostEqual(left, 8.737258300203047, places=9)
+
+    def test_a_nan_gap_is_skipped_on_the_decreasing_z_side_too(self):
+        # The mirror of the test above -- the two walks are separate
+        # invocations of `_walk_outward`, so a one-sided fix would pass the
+        # first test alone.
+        positions_um, clean_widths_um = _synthetic_quadratic_profile(0.5)
+        _waist, _clean_left, clean_right = locate_rayleigh_range(positions_um, clean_widths_um)
+
+        gapped_widths_um = clean_widths_um.copy()
+        gapped_widths_um[18] = np.nan
+        _waist, left, right = locate_rayleigh_range(positions_um, gapped_widths_um)
+
+        self.assertTrue(np.isfinite(left))
+        self.assertAlmostEqual(left, 8.796572875253810, places=9)
+        self.assertAlmostEqual(right, clean_right, places=9)
+
+    def test_a_multi_sample_nan_gap_is_skipped_the_same_way_as_a_single_one(self):
+        # D-08's "continue walking outward" wording, extended to a
+        # two-sample gap.
+        positions_um, clean_widths_um = _synthetic_quadratic_profile(0.5)
+
+        gapped_widths_um = clean_widths_um.copy()
+        gapped_widths_um[[21, 22]] = np.nan
+        _waist, _left, right = locate_rayleigh_range(positions_um, gapped_widths_um)
+
+        self.assertTrue(np.isfinite(right))
+        self.assertAlmostEqual(right, 11.104569499661586, places=9)
+        # The reported boundary moves further from the analytic crossing as
+        # the gap widens, which is the honest consequence of interpolating
+        # across a real data gap -- the alternative, refusing to report
+        # anything whenever a NaN appears, is what D-08 explicitly rejects.
+
+    def test_the_first_crossing_wins_even_when_a_cleaner_one_lies_further_out(self):
+        # D-07: first-crossing-wins was chosen over smoothing or fitting
+        # precisely so no new closed-form approximation enters the code
+        # path. The waist is index 5 (width 1.0); the increasing-Z side
+        # crosses the threshold at index 6, dips back below at index 7,
+        # then rises monotonically -- a global or best-crossing search
+        # would report the later, cleaner crossing beyond index 7 instead.
+        positions_um = np.arange(11, dtype=np.float64)
+        widths_um = np.array(
+            [3.0, 2.0, 1.6, 1.2, 1.05, 1.0, 1.5, 1.1, 2.0, 2.5, 3.0]
+        )
+
+        _waist, left, right = locate_rayleigh_range(positions_um, widths_um)
+
+        self.assertAlmostEqual(right, 5.82842712474619, places=9)
+        self.assertLess(right, 6.5)
+        self.assertAlmostEqual(left, 2.4644660940672622, places=9)
+
+    def test_a_sample_exactly_at_the_threshold_counts_as_the_crossing(self):
+        # The adjacency edge probe. A strict `>` test would skip this
+        # sample entirely and report a crossing further out, so an exact
+        # 8.0 is the falsifiable signature of the `>=` rule D-06 specifies.
+        positions_um = np.arange(11, dtype=np.float64)
+        widths_um = np.array(
+            [3.0, 2.0, 1.6, 1.2, 1.05, 1.0, 1.05, 1.2, float(np.sqrt(2.0)), 2.0, 3.0]
+        )
+
+        _waist, _left, right = locate_rayleigh_range(positions_um, widths_um)
+
+        self.assertEqual(right, 8.0)
 
     def test_module_imports_are_confined_to_numpy(self):
         # The structural half of the no-fitted-model prohibition (D-07).
