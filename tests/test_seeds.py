@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import math
 import unittest
 from pathlib import Path
@@ -9,6 +10,17 @@ from unittest import mock
 import numpy as np
 
 from tiresias import seeds
+
+
+def _load_legacy_rotation_baseline():
+    """Load the ROT-04 regression fixture captured by plan 07-01 Task 1.
+
+    Loaded by path, never by package import -- tests/fixtures/ has no
+    __init__.py.
+    """
+    fixture_path = Path(__file__).parent / "fixtures" / "legacy_rotation_baseline.json"
+    with fixture_path.open() as handle:
+        return json.load(handle)
 
 
 class SeedTests(unittest.TestCase):
@@ -884,6 +896,45 @@ class SeedTests(unittest.TestCase):
             message,
             msg="too-narrow-slit ValueError must point the user at slit_width (G-01-24)",
         )
+
+    # Contract with plan 07-02 Task 2: this test exercises the pre-v1.1 API
+    # today (rotate_illumination_psf(volume, angle)). 07-02 rewires this test
+    # in place, under the same name and against the same fixture, to call the
+    # replacement rotation API -- so `pytest -k legacy` selects the same gate
+    # before and after the migration. This is a rewiring, not a rewrite or a
+    # weakening of the assertion.
+    def test_legacy_cardinal_rotation_matches_captured_baseline(self):
+        baseline = _load_legacy_rotation_baseline()
+        volumes = {
+            "cubic": np.arange(1, 126, dtype=np.float32).reshape(5, 5, 5),
+            "anisotropic": np.arange(1, 61, dtype=np.float32).reshape(3, 4, 5),
+        }
+        for volume_key, volume in volumes.items():
+            for angle_key, expected in baseline["rotation"][volume_key].items():
+                with self.subTest(volume=volume_key, angle=angle_key):
+                    legacy_angle = float(angle_key)
+                    actual = seeds.rotate_illumination_psf(volume, legacy_angle)
+                    np.testing.assert_array_equal(
+                        actual, np.array(expected, dtype=np.float32)
+                    )
+
+    # Contract with plan 07-02 Task 2: this test exercises the pre-v1.1 API
+    # today (_resolve_slit_axis(angle)). 07-02 rewires this test in place,
+    # under the same name and against the same fixture, to call the
+    # replacement gate-axis API -- so `pytest -k legacy` selects the same gate
+    # before and after the migration. This is a rewiring, not a rewrite or a
+    # weakening of the assertion.
+    def test_legacy_gate_axis_matches_captured_baseline(self):
+        baseline = _load_legacy_rotation_baseline()
+        # The four tie angles 45/135/225/315 are the falsification target for
+        # 07-RESEARCH.md's claim that numpy.argmax's first-occurrence ordering
+        # on ties reproduces the legacy round-half-to-even rule with no extra
+        # tie-break code -- see 07-RESEARCH.md "Gate-Axis Resolution".
+        for angle_key, expected_axis in baseline["gate_axis"].items():
+            with self.subTest(angle=angle_key):
+                legacy_angle = float(angle_key)
+                actual_axis = seeds._resolve_slit_axis(legacy_angle)
+                self.assertEqual(actual_axis, expected_axis)
 
 
 if __name__ == "__main__":
