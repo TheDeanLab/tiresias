@@ -1249,6 +1249,103 @@ class SeedTests(unittest.TestCase):
                         )
                     generate_theoretical_psf.assert_not_called()
 
+    # Plan 07-03 Task 3: discharges ROADMAP.md Phase 7 Success Criterion 3 --
+    # the gate must stay locked to the beam under any 3D direction, and a
+    # genuinely non-planar orientation must still produce a narrow-slit seed
+    # rather than an error or a mis-oriented gate. D-05 makes a single
+    # snapped gate axis the right thing to measure even when the direction
+    # itself is oblique.
+    #
+    # This is a validity-and-narrowing assertion, not a bit-identity one --
+    # there is no pre-v1.1 reference output for a non-planar direction, so
+    # there is nothing to be bit-identical to (07-RESEARCH.md Pitfall 5).
+    def test_aslm_seed_at_non_planar_direction_stays_narrow(self):
+        common_kwargs = dict(
+            na=1.0,
+            detection_na=1.0,
+            illumination_na=0.2,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=1,
+            psf_model="vectorial",
+            dxy=0.108,
+            dz=0.3,
+            psf_size_z=15,
+            psf_size_xy=15,
+            background=0.0,
+            polar_deg=70.0,
+            azimuthal_deg=40.0,
+        )
+
+        # At (polar_deg=70, azimuthal_deg=40) all three components of the
+        # propagation direction are non-zero -- genuinely non-planar and
+        # unreachable by the pre-v1.1 single-angle API.
+        direction = seeds._spherical_direction(70.0, 40.0)
+        for component in direction:
+            self.assertGreater(abs(float(component)), 0.1)
+
+        # Computed, not hardcoded: the auto-resolved gate axis for this
+        # direction (recorded in 07-03-SUMMARY.md).
+        gate_axis = int(np.argmax(np.abs(direction)))
+
+        light_sheet = seeds.generate_psf_seed(psf_mode="light_sheet", **common_kwargs)
+        aslm = seeds.generate_psf_seed(
+            psf_mode="aslm", slit_width=0.4, **common_kwargs
+        )
+
+        self.assertEqual(aslm.shape, (15, 15, 15))
+        self.assertEqual(aslm.dtype, np.float32)
+        self.assertTrue(np.isfinite(aslm).all())
+        self.assertLess(abs(float(aslm.sum(dtype=np.float64)) - 1.0), 1e-5)
+        self.assertFalse(np.allclose(aslm, light_sheet))
+
+        def marginal_variance(psf, axis):
+            other_axes = tuple(a for a in range(3) if a != axis)
+            marginal = psf.sum(axis=other_axes, dtype=np.float64)
+            idx = np.arange(marginal.shape[0], dtype=np.float64)
+            centroid = float((marginal * idx).sum() / marginal.sum())
+            return float(
+                (marginal * (idx - centroid) ** 2).sum() / marginal.sum()
+            )
+
+        # Deviation from 07-03-PLAN.md's literal text, verified directly
+        # against this implementation (see 07-03-SUMMARY.md "Deviations"):
+        # the ASLM gate is applied to axis `gate_axis` in the PRE-rotation
+        # frame (seeds._apply_aslm_slit_gate runs before rotate_illumination
+        # in generate_psf_seed). For the four legacy cardinal directions the
+        # subsequent rotation is an exact 90-degree axis swap, so the
+        # narrowed pre-rotation axis and the narrowed post-rotation axis
+        # happen to share the same index. For a genuinely oblique direction
+        # like this one, rotate_illumination's isotropic pipeline instead
+        # smears that pre-rotation axis across all three post-rotation axes,
+        # weighted by seeds._rotation_matrix(...)[:, gate_axis] -- so the
+        # array axis that actually ends up narrowed is
+        # argmax(abs(rotation_matrix[:, gate_axis])), not gate_axis itself.
+        # Verified empirically (scratchpad, this session): forcing
+        # slit_axis=2 (this direction's auto-resolved gate_axis) leaves the
+        # final axis-2 marginal variance UNCHANGED relative to light_sheet
+        # (8.371 vs 8.359 -- no real narrowing), while the final axis-0
+        # marginal variance drops by ~73% (0.506 vs 1.878), exactly matching
+        # this formula's prediction of narrowed_axis=0. Measuring against
+        # the literal gate_axis would falsely fail a correctly-narrowing
+        # implementation; measuring against the true post-rotation axis
+        # proves the gate is genuinely locked to the beam without weakening
+        # the assertion.
+        rotation = seeds._rotation_matrix(70.0, 40.0)
+        narrowed_axis = int(np.argmax(np.abs(rotation[:, gate_axis])))
+
+        self.assertLess(
+            marginal_variance(aslm, narrowed_axis),
+            marginal_variance(light_sheet, narrowed_axis),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
