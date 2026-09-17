@@ -164,29 +164,42 @@ def print_table(results: list[tuple[float, np.ndarray, np.ndarray]]) -> None:
 def build_sweep_figure(
     results: list[tuple[float, np.ndarray, np.ndarray]],
 ) -> plt.Figure | None:
-    """Plot measured ASLM axial resolution vs. position, one line per NA.
+    """Overlay one measured ASLM axial-resolution-vs-position curve per swept NA.
 
-    Returns None when no result holds any finite width. Widths are plotted
-    exactly as measured: matplotlib renders NaN as a gap, which is the
-    honest rendering of the far-field positions where no half-max crossing
-    exists (roughly 30-40 percent of this window) -- these gaps are not
-    filled, interpolated across, or clipped. The title states only the
-    fixed parameters this run used; it does not assert a degradation
-    direction this run did not measure.
+    Returns None when no result holds any finite width -- the caller must
+    handle that return rather than assume a Figure. An individual NA whose
+    `widths_um` is entirely NaN is skipped (no invisible line, no misleading
+    legend entry for a curve with nothing to show), but every other NA's
+    curve is kept and plotted exactly as measured, NaN entries included:
+    matplotlib renders NaN as a break in the line, which is the honest
+    rendering of the far-field positions where the profile never drops to
+    half maximum. Roughly 30-40 percent of this window is legitimately
+    unmeasurable at every NA, so curves are continuous through the inner
+    region and become sparse toward the window edges -- these gaps are never
+    filled, interpolated across, clipped, or hidden by narrowing the plotted
+    x range. Any statement about how the curves behave is computed from
+    `results`, never written as fixed text (D-03: no Rayleigh-range concept
+    applies to ASLM, so no such annotation appears here either).
     """
-    if not any(np.isfinite(widths_um).any() for _na, _centered_um, widths_um in results):
+    plottable = [
+        (na, centered_um, widths_um)
+        for na, centered_um, widths_um in results
+        if np.isfinite(widths_um).any()
+    ]
+    if not plottable:
         print("no sweep point produced a measurable width -- skipping figure")
         return None
 
     fig, ax = plt.subplots(figsize=(9, 6))
-    for na, centered_um, widths_um in results:
+    for na, centered_um, widths_um in plottable:
         ax.plot(centered_um, widths_um, label=f"illumination_na={na:.2f}")
-    ax.set_xlabel("position along beam axis (um)")
+    ax.set_xlabel("position along beam propagation axis (um)")
     ax.set_ylabel("illumination-limited axial resolution, transverse FWHM (um)")
     ax.legend()
     half_extent = (COMMON["psf_size_z"] - 1) * COMMON["dz"] / 2.0
+    ax.set_xlim(-half_extent, half_extent)
     ax.set_title(
-        "ASLM axial resolution vs. position\n"
+        "ASLM axial resolution vs. position across the fixed window\n"
         f"detection_na={DETECTION_NA:.2f}, slit_width={SLIT_WIDTH:.2f} um, "
         f"window=+-{half_extent:.1f} um"
     )
