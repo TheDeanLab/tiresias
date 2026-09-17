@@ -62,12 +62,16 @@ DETECTION_NA = 1.0
 # Matches examples/light_sheet_vs_aslm.py's existing SLIT_WIDTH precedent.
 SLIT_WIDTH = 2.0
 
-# D-07: capped at 0.45. At illumination NA 0.50 and above the located waist
-# is a numerical artifact (measured Rayleigh extents of 0.014, 0.502 and
-# 1.231 um at NA 0.50, 0.55 and 0.60 at this same window size), and
-# enlarging the window does not fix it. This tracer slice sweeps a single
-# point; plan 08-02 widens NA_SWEEP without changing the structure here.
-NA_SWEEP: tuple[float, ...] = (0.25,)
+# D-07: five points spanning the validated 0.1-0.45 band. The floor, 0.10,
+# exercises roadmap Success Criterion 5's lowest-sweep-point requirement and
+# is the validated band's own floor. The ceiling is capped at 0.45 because at
+# illumination NA 0.50 and above the located waist becomes a numerical
+# artifact even at this window size (measured Rayleigh extents of 0.014,
+# 0.502 and 1.231 um at NA 0.50, 0.55 and 0.60). Five points (not the full
+# eight-point band) keep the whole run under about 25 s of PSF generation
+# (measured per-point: 1.7 s at NA 0.10 rising to 10.3 s at NA 0.45) while
+# still spanning the band end to end.
+NA_SWEEP: tuple[float, ...] = (0.10, 0.15, 0.25, 0.35, 0.45)
 
 COMMON = {
     "wavelength": 0.561,
@@ -106,6 +110,57 @@ def run_sweep(
     return results
 
 
+def print_table(results: list[tuple[float, np.ndarray, np.ndarray]]) -> None:
+    """Print one diagnostic row per swept NA: finite count, min/max width, max/min ratio.
+
+    Statistics are computed with `np.nanmin`/`np.nanmax`/`np.isfinite(...).sum()`
+    so the legitimately unmeasurable NaN positions are excluded from the
+    statistics rather than propagating into every column. A row with no
+    finite entry at all renders its numeric cells as an explicit SKIPPED
+    marker -- never as a number and never omitted -- matching
+    examples/slit_width_sweep.py::print_table's discipline. An empty
+    `results` still prints the header and a plain no-points line rather than
+    raising on an empty sequence.
+
+    This table is a diagnostic summary only: the position-resolved figure
+    below is the deliverable, and the max/min ratio column here does not
+    replace it -- no Rayleigh-range annotation applies to ASLM (D-03).
+    """
+    half_extent = (COMMON["psf_size_z"] - 1) * COMMON["dz"] / 2.0
+    print(
+        f"illumination NA sweep -- slit_width={SLIT_WIDTH:.2f} um, "
+        f"detection_na={DETECTION_NA:.2f}, window=+-{half_extent:.1f} um"
+    )
+    print(
+        f"{'na':>6}  {'finite/total':>14}  {'min width (um)':>16}  "
+        f"{'max width (um)':>16}  {'max/min ratio':>14}"
+    )
+    if not results:
+        print("  (no sweep points)")
+    else:
+        for na, _centered_um, widths_um in results:
+            total = widths_um.size
+            finite_count = int(np.isfinite(widths_um).sum())
+            counts = f"{finite_count}/{total}"
+            if finite_count == 0:
+                print(
+                    f"{na:>6.2f}  {counts:>14}  {'SKIPPED':>16}  "
+                    f"{'SKIPPED':>16}  {'SKIPPED':>14}"
+                )
+                continue
+            min_width = np.nanmin(widths_um)
+            max_width = np.nanmax(widths_um)
+            ratio = max_width / min_width
+            print(
+                f"{na:>6.2f}  {counts:>14}  {min_width:>16.4f}  "
+                f"{max_width:>16.4f}  {ratio:>14.4f}"
+            )
+    print(
+        "note: this table is a diagnostic summary -- the position-resolved "
+        "figure is the deliverable, not the ratio column above"
+    )
+
+
 def build_sweep_figure(
     results: list[tuple[float, np.ndarray, np.ndarray]],
 ) -> plt.Figure | None:
@@ -142,6 +197,7 @@ def build_sweep_figure(
 def main() -> None:
     """Run the sweep, build the figure, and save it under examples/output/."""
     results = run_sweep()
+    print_table(results)
     fig = build_sweep_figure(results)
     if fig is None:
         raise SystemExit("no sweep point produced a measurable width -- nothing to plot or save")
