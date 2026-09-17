@@ -430,8 +430,9 @@ gated axis, the Gaussian taper described above is skipped entirely rather than
 merely widened, so `aslm` output is bit-identical to the equivalent
 `light_sheet` output, not just numerically close. Compute that full extent for
 your own parameters from the gated axis's sample count times its pixel
-spacing: `psf_size_xy * dxy` when the gate axis is 2 (X), or `psf_size_z * dz`
-when it is 0 (Z). This is a useful sanity check that your ASLM parameters are
+spacing: `psf_size_xy * dxy` when the gate axis is 1 (Y) or 2 (X) — both axes
+share the lateral pixel count and spacing — or `psf_size_z * dz` when it is 0
+(Z). This is a useful sanity check that your ASLM parameters are
 wired correctly, and it means `aslm` degrades gracefully into the mode you
 already know at wide slit widths rather than failing or producing something
 you cannot reason about.

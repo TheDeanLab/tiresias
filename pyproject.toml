@@ -33,6 +33,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8",
+  "matplotlib>=3.8",
 ]
 
 [project.scripts]

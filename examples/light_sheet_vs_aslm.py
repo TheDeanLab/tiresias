@@ -78,7 +78,7 @@ def describe_environment() -> None:
         # Presence check only -- never import cupy itself.
         cupy_present = importlib.util.find_spec("cupy") is not None
     except Exception:
-        cupy_present = True
+        cupy_present = False  # probe failed; treat as "not confirmed present"
     print(f"cupy present in this environment: {'yes' if cupy_present else 'no'}")
 
 
