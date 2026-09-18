@@ -19,8 +19,10 @@ _ASLM_INVALID_SLIT_CASES = (
         "Exactly one of slit_width or slit_width_px",
     ),
     (
-        ["--psf-mode", "aslm", "--slit-width", "0.4", "--slit-axis", "1"],
-        "slit_axis must be 0 or 2",
+        # D-05: slit_axis=1 (Y) is now a VALID gate axis; only out-of-range
+        # values are rejected.
+        ["--psf-mode", "aslm", "--slit-width", "0.4", "--slit-axis", "3"],
+        "slit_axis must be 0, 1, or 2",
     ),
     (
         # Even --psf-size-xy is required: _gaussian_slit_window centres the Gaussian
@@ -241,8 +243,10 @@ class CliTests(unittest.TestCase):
                     "4",
                     "--slit-axis",
                     "2",
-                    "--light-sheet-angle",
+                    "--illumination-polar-deg",
                     "75.0",
+                    "--illumination-azimuthal-deg",
+                    "20.0",
                 ]
             )
 
@@ -250,7 +254,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(generate.call_args.kwargs["slit_width_px"], 4)
         self.assertIsNone(generate.call_args.kwargs["slit_width"])
         self.assertEqual(generate.call_args.kwargs["slit_axis"], 2)
-        self.assertEqual(generate.call_args.kwargs["light_sheet_angle"], 75.0)
+        self.assertEqual(generate.call_args.kwargs["polar_deg"], 75.0)
+        self.assertEqual(generate.call_args.kwargs["azimuthal_deg"], 20.0)
 
     def test_estimate_psf_cli_defaults_preserve_single_mode_parameters(self):
         from tiresias import cli
@@ -284,7 +289,8 @@ class CliTests(unittest.TestCase):
             )
 
         self.assertEqual(generate.call_args.kwargs["psf_mode"], "single")
-        self.assertEqual(generate.call_args.kwargs["light_sheet_angle"], 90.0)
+        self.assertEqual(generate.call_args.kwargs["polar_deg"], 90.0)
+        self.assertEqual(generate.call_args.kwargs["azimuthal_deg"], 0.0)
         self.assertIsNone(generate.call_args.kwargs["slit_width"])
         self.assertIsNone(generate.call_args.kwargs["slit_width_px"])
         self.assertIsNone(generate.call_args.kwargs["slit_axis"])
@@ -544,7 +550,14 @@ class CliTests(unittest.TestCase):
             ["--image-path", "volume.tif", "--output-path", "out.tif"]
         )
 
-        for attr in ("psf_mode", "slit_width", "slit_width_px", "slit_axis", "light_sheet_angle"):
+        for attr in (
+            "psf_mode",
+            "slit_width",
+            "slit_width_px",
+            "slit_axis",
+            "polar_deg",
+            "azimuthal_deg",
+        ):
             with self.subTest(attr=attr):
                 self.assertTrue(hasattr(estimate_ns, attr))
                 self.assertTrue(hasattr(deconvolve_ns, attr))
@@ -678,8 +691,10 @@ class CliTests(unittest.TestCase):
             "4",
             "--slit-axis",
             "0",
-            "--light-sheet-angle",
+            "--illumination-polar-deg",
             "45.0",
+            "--illumination-azimuthal-deg",
+            "0.0",
         ]
 
         cases = (
@@ -731,8 +746,10 @@ class CliTests(unittest.TestCase):
                 self.assertIsNone(kwargs["slit_width"])
                 self.assertEqual(kwargs["slit_axis"], 0)
                 self.assertIsInstance(kwargs["slit_axis"], int)
-                self.assertEqual(kwargs["light_sheet_angle"], 45.0)
-                self.assertIsInstance(kwargs["light_sheet_angle"], float)
+                self.assertEqual(kwargs["polar_deg"], 45.0)
+                self.assertIsInstance(kwargs["polar_deg"], float)
+                self.assertEqual(kwargs["azimuthal_deg"], 0.0)
+                self.assertIsInstance(kwargs["azimuthal_deg"], float)
 
     def test_both_cli_parsers_carry_the_locked_aslm_defaults(self):
         from tiresias import cli
@@ -746,7 +763,8 @@ class CliTests(unittest.TestCase):
             with self.subTest(parser=parser_name):
                 args = build_parser().parse_args(minimal_argv)
                 self.assertEqual(args.psf_mode, "single")
-                self.assertEqual(args.light_sheet_angle, 90.0)
+                self.assertEqual(args.polar_deg, 90.0)
+                self.assertEqual(args.azimuthal_deg, 0.0)
                 self.assertIsNone(args.slit_width)
                 self.assertIsNone(args.slit_width_px)
                 self.assertIsNone(args.slit_axis)

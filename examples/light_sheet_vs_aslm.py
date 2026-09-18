@@ -64,7 +64,8 @@ COMMON = {
     "psf_size_z": 61,
     "psf_size_xy": 128,
     "background": 0.0,
-    "light_sheet_angle": 90.0,
+    "polar_deg": 90.0,
+    "azimuthal_deg": 0.0,
 }
 # aslm demo slit width, matching docs/usage.md's own ASLM example.
 SLIT_WIDTH = 2.0
@@ -77,7 +78,7 @@ def describe_environment() -> None:
         # Presence check only -- never import cupy itself.
         cupy_present = importlib.util.find_spec("cupy") is not None
     except Exception:
-        cupy_present = True
+        cupy_present = False  # probe failed; treat as "not confirmed present"
     print(f"cupy present in this environment: {'yes' if cupy_present else 'no'}")
 
 
@@ -183,9 +184,10 @@ def build_comparison_figure(
 
         # Slit-gate footprint annotation, aslm panel only. The gate is
         # applied to axis 2 (X) in the illumination's *pre-rotation* frame;
-        # with light_sheet_angle=90.0 the illumination is then rotated into
-        # the Z/X plane, so in the saved seed the narrowing appears along Z
-        # -- the vertical axis shared by both the XZ and YZ panels here.
+        # at the default direction (polar_deg=90.0, azimuthal_deg=0.0) the
+        # illumination is then rotated into the Z/X plane, so in the saved
+        # seed the narrowing appears along Z -- the vertical axis shared by
+        # both the XZ and YZ panels here.
         for z_val in (-half_width, half_width):
             ax_al.axhline(z_val, color="white", linestyle="--", linewidth=1.0)
         ax_al.text(
@@ -255,8 +257,10 @@ def main() -> None:
     seed_light_sheet = generate_psf_seed(psf_mode="light_sheet", **COMMON)
     seed_aslm = generate_psf_seed(psf_mode="aslm", slit_width=SLIT_WIDTH, **COMMON)
 
-    # light_sheet_angle=90.0 (D-07) resolves gate axis 2 (X); see
-    # seeds.py::_resolve_slit_axis.
+    # The default direction (polar_deg=90.0, azimuthal_deg=0.0) resolves gate
+    # axis 2 (X) via seeds._resolve_slit_axis's argmax(abs(direction))
+    # resolution (seeds.py has no single D-NN tag for this specific mapping
+    # after plan 07-02's rewrite; see _resolve_slit_axis directly).
     gate_axis = 2
     full_extent = COMMON["psf_size_xy"] * COMMON["dxy"]
     summarise_mode("light_sheet", seed_light_sheet, "none")

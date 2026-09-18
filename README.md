@@ -232,7 +232,8 @@ seed = generate_psf_seed(
     psf_size_z=61,
     psf_size_xy=128,
     background=0.0,
-    light_sheet_angle=90.0,
+    polar_deg=90.0,
+    azimuthal_deg=0.0,
 )
 
 psf = estimate_psf_from_chunks(

@@ -17,6 +17,7 @@ class PublicApiTests(unittest.TestCase):
         ]:
             self.assertTrue(hasattr(tiresias, name), name)
         self.assertFalse(hasattr(tiresias, "deconvolve_with_cucim"))
+        self.assertFalse(hasattr(tiresias, "measure_beam_width_profile"))
 
 
 if __name__ == "__main__":

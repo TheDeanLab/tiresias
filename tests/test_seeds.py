@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import math
 import unittest
 from pathlib import Path
@@ -9,6 +10,17 @@ from unittest import mock
 import numpy as np
 
 from tiresias import seeds
+
+
+def _load_legacy_rotation_baseline():
+    """Load the ROT-04 regression fixture captured by plan 07-01 Task 1.
+
+    Loaded by path, never by package import -- tests/fixtures/ has no
+    __init__.py.
+    """
+    fixture_path = Path(__file__).parent / "fixtures" / "legacy_rotation_baseline.json"
+    with fixture_path.open() as handle:
+        return json.load(handle)
 
 
 class SeedTests(unittest.TestCase):
@@ -93,7 +105,8 @@ class SeedTests(unittest.TestCase):
                 psf_size_z=3,
                 psf_size_xy=5,
                 background=0.0,
-                light_sheet_angle=90.0,
+                polar_deg=90.0,
+                azimuthal_deg=0.0,
             )
 
         self.assertEqual(psf.shape, detection.shape)
@@ -130,7 +143,8 @@ class SeedTests(unittest.TestCase):
                 psf_size_z=3,
                 psf_size_xy=5,
                 background=0.0,
-                light_sheet_angle=90.0,
+                polar_deg=90.0,
+                azimuthal_deg=0.0,
             )
 
         self.assertEqual(psf.dtype, np.float32)
@@ -167,7 +181,8 @@ class SeedTests(unittest.TestCase):
                     psf_size_z=3,
                     psf_size_xy=5,
                     background=0.0,
-                    light_sheet_angle=90.0,
+                    polar_deg=90.0,
+                    azimuthal_deg=0.0,
                 )
 
     def test_light_sheet_seed_at_non_right_angle(self):
@@ -201,7 +216,8 @@ class SeedTests(unittest.TestCase):
                 psf_size_z=5,
                 psf_size_xy=5,
                 background=0.0,
-                light_sheet_angle=45.0,
+                polar_deg=45.0,
+                azimuthal_deg=0.0,
             )
 
         self.assertEqual(psf.shape, illumination.shape)
@@ -235,7 +251,8 @@ class SeedTests(unittest.TestCase):
             psf_size_z=15,
             psf_size_xy=15,
             background=0.0,
-            light_sheet_angle=90.0,
+            polar_deg=90.0,
+            azimuthal_deg=0.0,
         )
 
         light_sheet = seeds.generate_psf_seed(psf_mode="light_sheet", **common_kwargs)
@@ -313,7 +330,8 @@ class SeedTests(unittest.TestCase):
                 psf_size_z=5,
                 psf_size_xy=5,
                 background=0.0,
-                light_sheet_angle=90.0,
+                polar_deg=90.0,
+                azimuthal_deg=0.0,
                 slit_width=0.216,
             )
 
@@ -322,7 +340,10 @@ class SeedTests(unittest.TestCase):
         window = np.exp(-0.5 * ((idx - 2.0) / sigma) ** 2).astype(np.float32)
         gated = illumination * window.reshape(1, 1, 5)
         expected = seeds.normalise_psf(
-            detection * seeds.rotate_illumination_psf(gated, 90.0)
+            detection
+            * seeds.rotate_illumination(
+                gated, polar_deg=90.0, azimuthal_deg=0.0, dxy=0.108, dz=0.3
+            )
         )
 
         self.assertEqual(psf.shape, (5, 5, 5))
@@ -334,16 +355,15 @@ class SeedTests(unittest.TestCase):
         illumination = np.ones((9, 9, 9), dtype=np.float32)
         captured = {}
 
-        def _record(illumination_arg, angle):
+        def _record(illumination_arg, *, polar_deg, azimuthal_deg, dxy, dz):
             captured["gated"] = np.array(illumination_arg, copy=True)
-            captured["angle"] = angle
             return illumination_arg
 
         with mock.patch.object(
             seeds,
             "generate_theoretical_psf",
             side_effect=[detection, illumination],
-        ), mock.patch.object(seeds, "rotate_illumination_psf", side_effect=_record):
+        ), mock.patch.object(seeds, "rotate_illumination", side_effect=_record):
             seeds.generate_psf_seed(
                 psf_mode="aslm",
                 na=1.0,
@@ -365,7 +385,8 @@ class SeedTests(unittest.TestCase):
                 psf_size_z=9,
                 psf_size_xy=9,
                 background=0.0,
-                light_sheet_angle=90.0,
+                polar_deg=90.0,
+                azimuthal_deg=0.0,
                 slit_width=0.216,
                 slit_axis=0,
             )
@@ -376,53 +397,60 @@ class SeedTests(unittest.TestCase):
         self.assertLess(axis0_profile[0], axis0_profile[4])
         self.assertTrue(np.allclose(axis2_profile, axis2_profile[0]))
 
-    def test_aslm_rejects_invalid_slit_axis(self):
+    def test_aslm_rejects_out_of_range_slit_axis(self):
+        # D-05: slit_axis=1 (Y) is now a VALID gate axis; only out-of-range
+        # values are rejected.
         detection = np.ones((9, 9, 9), dtype=np.float32)
 
-        with mock.patch.object(
-            seeds,
-            "generate_theoretical_psf",
-            return_value=detection,
-        ) as generate_theoretical_psf:
-            with self.assertRaisesRegex(ValueError, "slit_axis must be 0 or 2"):
-                seeds.generate_psf_seed(
-                    psf_mode="aslm",
-                    na=1.0,
-                    detection_na=1.0,
-                    illumination_na=0.2,
-                    wavelength=0.561,
-                    ni=1.33,
-                    ns=1.33,
-                    ni0=None,
-                    tg=None,
-                    tg0=None,
-                    ng=None,
-                    ng0=None,
-                    ti0=None,
-                    oversample_factor=3,
-                    psf_model="vectorial",
-                    dxy=0.108,
-                    dz=0.3,
-                    psf_size_z=9,
-                    psf_size_xy=9,
-                    background=0.0,
-                    light_sheet_angle=90.0,
-                    slit_width=0.216,
-                    slit_axis=1,
-                )
+        for invalid_slit_axis in (3, -1):
+            with self.subTest(slit_axis=invalid_slit_axis):
+                with mock.patch.object(
+                    seeds,
+                    "generate_theoretical_psf",
+                    return_value=detection,
+                ) as generate_theoretical_psf:
+                    with self.assertRaisesRegex(ValueError, "slit_axis must be 0, 1, or 2"):
+                        seeds.generate_psf_seed(
+                            psf_mode="aslm",
+                            na=1.0,
+                            detection_na=1.0,
+                            illumination_na=0.2,
+                            wavelength=0.561,
+                            ni=1.33,
+                            ns=1.33,
+                            ni0=None,
+                            tg=None,
+                            tg0=None,
+                            ng=None,
+                            ng0=None,
+                            ti0=None,
+                            oversample_factor=3,
+                            psf_model="vectorial",
+                            dxy=0.108,
+                            dz=0.3,
+                            psf_size_z=9,
+                            psf_size_xy=9,
+                            background=0.0,
+                            polar_deg=90.0,
+                            azimuthal_deg=0.0,
+                            slit_width=0.216,
+                            slit_axis=invalid_slit_axis,
+                        )
 
-        generate_theoretical_psf.assert_not_called()
+                generate_theoretical_psf.assert_not_called()
 
     def _capture_aslm_gate(self, **overrides):
         """Run generate_psf_seed(psf_mode="aslm", ...), capturing the pre-rotation
-        gated illumination array and the angle passed to rotate_illumination_psf."""
+        gated illumination array and the (polar_deg, azimuthal_deg) passed to
+        rotate_illumination."""
         detection = np.ones((9, 9, 9), dtype=np.float32)
         illumination = np.ones((9, 9, 9), dtype=np.float32)
         captured = {}
 
-        def _record(illumination_arg, angle):
+        def _record(illumination_arg, *, polar_deg, azimuthal_deg, dxy, dz):
             captured["gated"] = np.array(illumination_arg, copy=True)
-            captured["angle"] = angle
+            captured["polar_deg"] = polar_deg
+            captured["azimuthal_deg"] = azimuthal_deg
             return illumination_arg
 
         kwargs = dict(
@@ -454,31 +482,34 @@ class SeedTests(unittest.TestCase):
             seeds,
             "generate_theoretical_psf",
             side_effect=[detection, illumination],
-        ), mock.patch.object(seeds, "rotate_illumination_psf", side_effect=_record):
+        ), mock.patch.object(seeds, "rotate_illumination", side_effect=_record):
             seeds.generate_psf_seed(**kwargs)
 
         return captured
 
-    def test_aslm_gate_axis_selection_by_angle(self):
-        # Table computed from int(round(angle / 90.0)) % 4 under Python's
-        # round-half-to-even; see this plan's interface_context tie-angle table.
+    def test_aslm_gate_axis_selection_by_direction(self):
+        # Table computed from int(np.argmax(np.abs(direction))); see
+        # 07-RESEARCH.md "Gate-Axis Resolution" and the fixture-backed legacy
+        # baseline tests below for the empirical falsification of this table.
         cases = [
-            (0.0, 0),
-            (45.0, 0),
-            (90.0, 2),
-            (135.0, 0),
-            (180.0, 0),
-            (270.0, 2),
+            (0.0, 0.0, 0),
+            (45.0, 0.0, 0),
+            (90.0, 0.0, 2),
+            (135.0, 0.0, 0),
+            (180.0, 0.0, 0),
+            (90.0, 180.0, 2),
         ]
-        for angle, expected_axis in cases:
-            with self.subTest(angle=angle):
-                captured = self._capture_aslm_gate(light_sheet_angle=angle)
+        for polar_deg, azimuthal_deg, expected_axis in cases:
+            with self.subTest(polar_deg=polar_deg, azimuthal_deg=azimuthal_deg):
+                captured = self._capture_aslm_gate(
+                    polar_deg=polar_deg, azimuthal_deg=azimuthal_deg
+                )
                 gated = captured["gated"]
                 axis0_profile = gated.sum(axis=(1, 2))
                 axis1_profile = gated.sum(axis=(0, 2))
                 axis2_profile = gated.sum(axis=(0, 1))
 
-                # Axis 1 (Y) is never gated by any code path.
+                # Axis 1 (Y) is not exercised by any of these six cases.
                 self.assertTrue(np.allclose(axis1_profile, axis1_profile[0]))
 
                 if expected_axis == 0:
@@ -490,17 +521,19 @@ class SeedTests(unittest.TestCase):
                 self.assertLess(narrowed_profile[0], narrowed_profile[4])
                 self.assertTrue(np.allclose(flat_profile, flat_profile[0]))
 
-    def test_aslm_rotation_uses_true_angle_not_snapped_quadrant(self):
-        captured = self._capture_aslm_gate(light_sheet_angle=45.0)
+    def test_aslm_rotation_receives_true_direction_not_snapped_gate_axis(self):
+        captured = self._capture_aslm_gate(polar_deg=45.0, azimuthal_deg=0.0)
 
         axis0_profile = captured["gated"].sum(axis=(1, 2))
         self.assertEqual(int(np.argmax(axis0_profile)), 4)
         self.assertLess(axis0_profile[0], axis0_profile[4])
 
-        # D-02: rotate_illumination_psf receives the TRUE angle, not the
-        # quadrant-snapped gate axis (which resolved to axis 0 here, matching
-        # the even-quadrant snap of 45.0, while the rotation angle stays 45.0).
-        self.assertEqual(captured["angle"], 45.0)
+        # D-05: rotate_illumination receives the TRUE direction, not the
+        # snapped gate axis (which resolved to axis 0 here, matching the
+        # nearest-axis snap of (45, 0), while the rotation direction stays
+        # (polar_deg=45.0, azimuthal_deg=0.0)).
+        self.assertEqual(captured["polar_deg"], 45.0)
+        self.assertEqual(captured["azimuthal_deg"], 0.0)
 
     def test_aslm_invalid_slit_width_raises(self):
         detection = np.ones((9, 9, 9), dtype=np.float32)
@@ -526,7 +559,8 @@ class SeedTests(unittest.TestCase):
             psf_size_z=9,
             psf_size_xy=9,
             background=0.0,
-            light_sheet_angle=90.0,
+            polar_deg=90.0,
+            azimuthal_deg=0.0,
         )
 
         cases = [
@@ -576,7 +610,8 @@ class SeedTests(unittest.TestCase):
             psf_size_z=9,
             psf_size_xy=9,
             background=0.0,
-            light_sheet_angle=90.0,
+            polar_deg=90.0,
+            azimuthal_deg=0.0,
         )
 
         with mock.patch.object(
@@ -632,7 +667,8 @@ class SeedTests(unittest.TestCase):
             psf_size_z=9,
             psf_size_xy=9,
             background=0.0,
-            light_sheet_angle=90.0,
+            polar_deg=90.0,
+            azimuthal_deg=0.0,
             slit_axis=0,
         )
 
@@ -677,8 +713,9 @@ class SeedTests(unittest.TestCase):
         self.assertFalse(np.allclose(psf_px, psf_dz_equivalent))
 
     def test_aslm_too_narrow_slit_width_raises(self):
-        # All energy sits at gate-axis (axis 2, since light_sheet_angle=90.0)
-        # index 0, distance 4 from the size-9 axis's centre index 4.
+        # All energy sits at gate-axis (axis 2, since polar_deg=90.0,
+        # azimuthal_deg=0.0) index 0, distance 4 from the size-9 axis's
+        # centre index 4.
         illumination = np.zeros((9, 9, 9), dtype=np.float32)
         illumination[:, :, 0] = 1.0
 
@@ -714,7 +751,8 @@ class SeedTests(unittest.TestCase):
             psf_size_z=9,
             psf_size_xy=9,
             background=0.0,
-            light_sheet_angle=90.0,
+            polar_deg=90.0,
+            azimuthal_deg=0.0,
         )
 
         cases = [
@@ -764,7 +802,8 @@ class SeedTests(unittest.TestCase):
             psf_size_z=5,
             psf_size_xy=psf_size_xy,
             background=0.0,
-            light_sheet_angle=90.0,
+            polar_deg=90.0,
+            azimuthal_deg=0.0,
         )
 
         def _fresh_pair():
@@ -827,7 +866,7 @@ class SeedTests(unittest.TestCase):
             "psf_mode", "na", "detection_na", "illumination_na", "wavelength",
             "ni", "ns", "ni0", "tg", "tg0", "ng", "ng0", "ti0",
             "oversample_factor", "psf_model", "dxy", "dz", "psf_size_z",
-            "psf_size_xy", "background", "light_sheet_angle",
+            "psf_size_xy", "background", "polar_deg", "azimuthal_deg",
             "slit_width", "slit_axis", "slit_width_px",
         )
         self.assertEqual(parameter_names, expected_parameter_names)
@@ -883,6 +922,422 @@ class SeedTests(unittest.TestCase):
             "slit_width",
             message,
             msg="too-narrow-slit ValueError must point the user at slit_width (G-01-24)",
+        )
+
+    # Tracer (plan 07-02 Task 1): drives cli.estimate_psf_main twice -- once
+    # at an oblique 3D direction, once at the default -- through the real
+    # generate_psf_seed, proving the whole stack (CLI flag -> direction
+    # vector -> gate-axis resolver -> physical-space rotation -> normalized
+    # seed) end to end for a direction the old 1-DOF API could never reach.
+    def test_light_sheet_seed_at_oblique_3d_direction_end_to_end(self):
+        from tiresias import cli
+
+        def _capture_seed(*, psf_seed, **kwargs):
+            del kwargs
+            return psf_seed
+
+        common_argv = [
+            "--image-path",
+            "volume.tif",
+            "--output-path",
+            "estimated_psf.tif",
+            "--detection-na",
+            "1.0",
+            "--illumination-na",
+            "0.2",
+            "--wavelength",
+            "0.561",
+            "--ni",
+            "1.33",
+            "--ns",
+            "1.33",
+            "--dxy",
+            "0.108",
+            "--dz",
+            "0.3",
+            "--oversample-factor",
+            "1",
+            "--psf-size-z",
+            "15",
+            "--psf-size-xy",
+            "15",
+            "--psf-mode",
+            "light_sheet",
+        ]
+
+        seeds_by_key = {}
+        with mock.patch.object(cli, "imwrite"):
+            for extra_args, key in (
+                ([], "default"),
+                (
+                    ["--illumination-polar-deg", "60", "--illumination-azimuthal-deg", "35"],
+                    "oblique",
+                ),
+            ):
+                with mock.patch.object(
+                    cli, "estimate_psf_from_chunks", side_effect=_capture_seed
+                ) as estimate:
+                    cli.estimate_psf_main(common_argv + extra_args)
+                    seeds_by_key[key] = estimate.call_args.kwargs["psf_seed"]
+
+        default_seed = seeds_by_key["default"]
+        oblique_seed = seeds_by_key["oblique"]
+
+        self.assertEqual(oblique_seed.shape, (15, 15, 15))
+        self.assertEqual(oblique_seed.dtype, np.float32)
+        self.assertTrue(np.isfinite(oblique_seed).all())
+        self.assertAlmostEqual(float(oblique_seed.sum(dtype=np.float64)), 1.0, delta=1e-5)
+        self.assertGreater(int(np.count_nonzero(oblique_seed > 0)), 100)
+        self.assertFalse(np.allclose(oblique_seed, default_seed))
+
+    # Rewired by plan 07-02 Task 2: exercises the new rotate_illumination(...)
+    # replacement API against the exact same unmodified 07-01 fixture, so
+    # `pytest -k legacy` selects the same gate before and after the
+    # migration. This is a rewiring, not a rewrite or a weakening of the
+    # assertion; tests/fixtures/legacy_rotation_baseline.json is untouched.
+    def test_legacy_cardinal_rotation_matches_captured_baseline(self):
+        baseline = _load_legacy_rotation_baseline()
+        volumes = {
+            "cubic": np.arange(1, 126, dtype=np.float32).reshape(5, 5, 5),
+            "anisotropic": np.arange(1, 61, dtype=np.float32).reshape(3, 4, 5),
+        }
+        for volume_key, volume in volumes.items():
+            for angle_key, expected in baseline["rotation"][volume_key].items():
+                with self.subTest(volume=volume_key, angle=angle_key):
+                    legacy_angle = float(angle_key)
+                    # D-03's mapping: the legacy single-angle parameter maps
+                    # onto (polar=legacy_angle, azimuthal=0), because
+                    # Ry(angle) applied to the pre-rotation +Z axis gives
+                    # exactly the Z/X-plane direction the old parameter
+                    # described. dxy != dz is deliberate: at a legacy
+                    # cardinal direction the fast path must ignore both, so a
+                    # green assertion under anisotropic spacing proves
+                    # delegation happened rather than the isotropic pipeline.
+                    actual = seeds.rotate_illumination(
+                        volume,
+                        polar_deg=legacy_angle,
+                        azimuthal_deg=0.0,
+                        dxy=0.108,
+                        dz=0.300,
+                    )
+                    np.testing.assert_array_equal(
+                        actual, np.array(expected, dtype=np.float32)
+                    )
+
+    # Rewired by plan 07-02 Task 2: exercises the new
+    # _resolve_slit_axis(_spherical_direction(...)) replacement API against
+    # the exact same unmodified 07-01 fixture, so `pytest -k legacy` selects
+    # the same gate before and after the migration. This is a rewiring, not
+    # a rewrite or a weakening of the assertion.
+    def test_legacy_gate_axis_matches_captured_baseline(self):
+        baseline = _load_legacy_rotation_baseline()
+        # The four tie angles 45/135/225/315 are the falsification target for
+        # 07-RESEARCH.md's claim that numpy.argmax's first-occurrence ordering
+        # on ties reproduces the legacy round-half-to-even rule with no extra
+        # tie-break code -- see 07-RESEARCH.md "Gate-Axis Resolution".
+        for angle_key, expected_axis in baseline["gate_axis"].items():
+            with self.subTest(angle=angle_key):
+                legacy_angle = float(angle_key)
+                actual_axis = seeds._resolve_slit_axis(
+                    seeds._spherical_direction(legacy_angle, 0.0)
+                )
+                self.assertEqual(actual_axis, expected_axis)
+
+    # Plan 07-03 Task 1 (ROT-02): STATE.md records rotation-formula
+    # validation against dz != dxy as this phase's principal research risk,
+    # requiring an explicit physical-versus-index-space regression test.
+    # 07-RESEARCH.md's "Architecture Patterns" Pattern 1 empirically measured
+    # 0.0102 physical-pipeline error and 0.641 naive-rotation error for this
+    # exact recipe; this test makes that verification permanent.
+    def test_rotation_is_physical_not_index_space_under_anisotropic_voxels(self):
+        dxy = 0.108
+        dz = 0.300
+        z = np.arange(61, dtype=np.float64)
+        # Intensity varies only along Z as a sigma=1.0um Gaussian, constant
+        # across Y/X -- dz (0.300) samples Z 2.78x more coarsely than dxy
+        # (0.108) samples the lateral axes. This anisotropy is the whole
+        # point of the fixture and must not be changed to equal spacings.
+        profile = np.exp(-0.5 * (((z - 30) * dz) / 1.0) ** 2).astype(np.float32)
+        volume = np.broadcast_to(
+            profile[:, None, None], (61, 61, 61)
+        ).astype(np.float32).copy()
+
+        # (polar_deg=90, azimuthal_deg=90) is pure +Y -- deliberately NOT one
+        # of the four legacy cardinal directions, so the call exercises the
+        # general _rotate_isotropic path rather than the np.rot90 fast path.
+        # Asserted explicitly so a future change routing +Y through the fast
+        # path cannot make this test silently vacuous.
+        direction = seeds._spherical_direction(90.0, 90.0)
+        self.assertIsNone(seeds._match_legacy_cardinal(direction))
+
+        rotated = seeds.rotate_illumination(
+            volume, polar_deg=90.0, azimuthal_deg=90.0, dxy=dxy, dz=dz
+        )
+        lineout = rotated[30, :, 30]
+        expected = np.exp(-0.5 * (((np.arange(61) - 30) * dxy) / 1.0) ** 2)
+        physical_error = float(np.abs(lineout - expected).max())
+        # Measured 0.0102 (07-RESEARCH.md) / 0.01016 (this session, this
+        # commit -- see 07-03-SUMMARY.md); 0.05 leaves headroom for
+        # array-size differences while staying far below the naive error.
+        # Do not widen this bound if it fails -- the pipeline is wrong; check
+        # `matrix = rotation.T` and grid_mode consistency in
+        # _rotate_isotropic first.
+        self.assertLessEqual(physical_error, 0.05)
+
+        # Contrast arm: a pure index-space rotation mapping Z onto Y with no
+        # spacing correction -- exactly what the pre-v1.1 code did in its own
+        # plane. It transplants 61 samples spaced at 0.300um onto an axis
+        # spaced at 0.108um, so the beam appears 2.78x too narrow -- the
+        # failure mode ROT-02 exists to eliminate. Without this arm the
+        # tolerance assertion alone would not distinguish a correct pipeline
+        # from a lucky one.
+        naive = np.rot90(volume, k=1, axes=(0, 1))
+        naive_lineout = naive[30, :, 30]
+        naive_error = float(np.abs(naive_lineout - expected).max())
+        self.assertGreaterEqual(naive_error, 0.3)
+
+    def test_azimuthal_has_no_effect_at_the_poles(self):
+        # 07-RESEARCH.md Pitfall 4: this invariance is a property of matching
+        # on the direction vector rather than the raw angle pair, so it needs
+        # no special-case branch. This test exists so that adding such a
+        # branch -- which would be incorrect -- goes red.
+        dxy = 0.108
+        dz = 0.300
+        z = np.arange(15, dtype=np.float64)
+        profile = np.exp(-0.5 * (((z - 7) * dz) / 1.0) ** 2).astype(np.float32)
+        volume = np.broadcast_to(
+            profile[:, None, None], (15, 15, 15)
+        ).astype(np.float32).copy()
+
+        for polar_deg in (0.0, 180.0):
+            with self.subTest(polar_deg=polar_deg):
+                first = seeds.rotate_illumination(
+                    volume, polar_deg=polar_deg, azimuthal_deg=45.0, dxy=dxy, dz=dz
+                )
+                second = seeds.rotate_illumination(
+                    volume, polar_deg=polar_deg, azimuthal_deg=200.0, dxy=dxy, dz=dz
+                )
+                np.testing.assert_array_equal(first, second)
+
+    # Plan 07-03 Task 2 (ROT-03): the mirror image of the existing axis-0 and
+    # axis-2 gate-axis cases, and the first gate-axis case the pre-v1.1
+    # one-degree-of-freedom API could not express at all.
+    def test_gate_axis_resolves_to_y_for_out_of_plane_direction(self):
+        captured = self._capture_aslm_gate(polar_deg=90.0, azimuthal_deg=90.0)
+        gated = captured["gated"]
+        axis0_profile = gated.sum(axis=(1, 2))
+        axis1_profile = gated.sum(axis=(0, 2))
+        axis2_profile = gated.sum(axis=(0, 1))
+
+        self.assertEqual(int(np.argmax(axis1_profile)), 4)
+        self.assertLess(axis1_profile[0], axis1_profile[4])
+        self.assertTrue(np.allclose(axis0_profile, axis0_profile[0]))
+        self.assertTrue(np.allclose(axis2_profile, axis2_profile[0]))
+
+        # Exact-tie sub-case: (polar_deg=90, azimuthal_deg=45) has equal Y
+        # and X direction components. This is resolved by
+        # seeds._resolve_slit_axis's tolerance-based snap-before-argmax
+        # (RIGHT_ANGLE_TOLERANCE), not a bare argmax -- a bare
+        # np.argmax(np.abs(direction)) at this exact tie is not portable
+        # across platforms (Windows and Linux libm sin/cos differ by 1 ULP
+        # here, flipping the tie-break).
+        tie_direction = seeds._spherical_direction(90.0, 45.0)
+        self.assertEqual(seeds._resolve_slit_axis(tie_direction), 1)
+
+        tie_captured = self._capture_aslm_gate(polar_deg=90.0, azimuthal_deg=45.0)
+        tie_gated = tie_captured["gated"]
+        tie_axis0_profile = tie_gated.sum(axis=(1, 2))
+        tie_axis1_profile = tie_gated.sum(axis=(0, 2))
+        tie_axis2_profile = tie_gated.sum(axis=(0, 1))
+
+        self.assertEqual(int(np.argmax(tie_axis1_profile)), 4)
+        self.assertLess(tie_axis1_profile[0], tie_axis1_profile[4])
+        self.assertTrue(np.allclose(tie_axis0_profile, tie_axis0_profile[0]))
+        self.assertTrue(np.allclose(tie_axis2_profile, tie_axis2_profile[0]))
+
+    def test_slit_axis_override_accepts_y(self):
+        # Auto-resolved axis for (polar_deg=90, azimuthal_deg=0) is 2 (X);
+        # the override forces axis 1 (Y) instead.
+        captured = self._capture_aslm_gate(
+            polar_deg=90.0, azimuthal_deg=0.0, slit_axis=1
+        )
+        gated = captured["gated"]
+        axis0_profile = gated.sum(axis=(1, 2))
+        axis1_profile = gated.sum(axis=(0, 2))
+        axis2_profile = gated.sum(axis=(0, 1))
+
+        self.assertEqual(int(np.argmax(axis1_profile)), 4)
+        self.assertLess(axis1_profile[0], axis1_profile[4])
+        self.assertTrue(np.allclose(axis0_profile, axis0_profile[0]))
+        self.assertTrue(np.allclose(axis2_profile, axis2_profile[0]))
+
+        # D-09: the widened {0,1,2} override range did not disturb the
+        # always-via-dxy conversion rule -- slit_width_px=2 at dxy=0.108 must
+        # gate the identical axis-1 marginal as the equivalent
+        # slit_width=2*dxy call.
+        captured_px = self._capture_aslm_gate(
+            polar_deg=90.0,
+            azimuthal_deg=0.0,
+            slit_axis=1,
+            slit_width=None,
+            slit_width_px=2,
+        )
+        np.testing.assert_array_equal(captured_px["gated"], gated)
+
+    def test_non_finite_rotation_angles_reject_before_any_psf_generation(self):
+        # normalise_psf already applies nan_to_num, so without this guard a
+        # NaN/inf angle would produce a silently all-zero seed flowing into
+        # blind-RL estimation looking valid -- the same failure class the
+        # existing D-08 slit-energy guard addresses. Covers both rotating
+        # modes (light_sheet and aslm).
+        detection = np.ones((5, 5, 5), dtype=np.float32)
+        base_kwargs = dict(
+            na=1.0,
+            detection_na=1.0,
+            illumination_na=0.2,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=3,
+            psf_model="vectorial",
+            dxy=0.108,
+            dz=0.3,
+            psf_size_z=5,
+            psf_size_xy=5,
+            background=0.0,
+        )
+        cases = [
+            (
+                "light_sheet, nan polar_deg",
+                "light_sheet",
+                {"polar_deg": float("nan"), "azimuthal_deg": 0.0},
+                "polar_deg must be finite",
+            ),
+            (
+                "aslm, inf azimuthal_deg",
+                "aslm",
+                {
+                    "polar_deg": 90.0,
+                    "azimuthal_deg": float("inf"),
+                    "slit_width": 0.2,
+                },
+                "azimuthal_deg must be finite",
+            ),
+        ]
+        for label, psf_mode, extra_kwargs, expected_message in cases:
+            with self.subTest(label=label):
+                with mock.patch.object(
+                    seeds,
+                    "generate_theoretical_psf",
+                    return_value=detection,
+                ) as generate_theoretical_psf:
+                    with self.assertRaisesRegex(ValueError, expected_message):
+                        seeds.generate_psf_seed(
+                            psf_mode=psf_mode, **base_kwargs, **extra_kwargs
+                        )
+                    generate_theoretical_psf.assert_not_called()
+
+    # Plan 07-03 Task 3: discharges ROADMAP.md Phase 7 Success Criterion 3 --
+    # the gate must stay locked to the beam under any 3D direction, and a
+    # genuinely non-planar orientation must still produce a narrow-slit seed
+    # rather than an error or a mis-oriented gate. D-05 makes a single
+    # snapped gate axis the right thing to measure even when the direction
+    # itself is oblique.
+    #
+    # This is a validity-and-narrowing assertion, not a bit-identity one --
+    # there is no pre-v1.1 reference output for a non-planar direction, so
+    # there is nothing to be bit-identical to (07-RESEARCH.md Pitfall 5).
+    def test_aslm_seed_at_non_planar_direction_stays_narrow(self):
+        common_kwargs = dict(
+            na=1.0,
+            detection_na=1.0,
+            illumination_na=0.2,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=1,
+            psf_model="vectorial",
+            dxy=0.108,
+            dz=0.3,
+            psf_size_z=15,
+            psf_size_xy=15,
+            background=0.0,
+            polar_deg=70.0,
+            azimuthal_deg=40.0,
+        )
+
+        # At (polar_deg=70, azimuthal_deg=40) all three components of the
+        # propagation direction are non-zero -- genuinely non-planar and
+        # unreachable by the pre-v1.1 single-angle API.
+        direction = seeds._spherical_direction(70.0, 40.0)
+        for component in direction:
+            self.assertGreater(abs(float(component)), 0.1)
+
+        # Computed, not hardcoded: the auto-resolved gate axis for this
+        # direction (recorded in 07-03-SUMMARY.md).
+        gate_axis = int(np.argmax(np.abs(direction)))
+
+        light_sheet = seeds.generate_psf_seed(psf_mode="light_sheet", **common_kwargs)
+        aslm = seeds.generate_psf_seed(
+            psf_mode="aslm", slit_width=0.4, **common_kwargs
+        )
+
+        self.assertEqual(aslm.shape, (15, 15, 15))
+        self.assertEqual(aslm.dtype, np.float32)
+        self.assertTrue(np.isfinite(aslm).all())
+        self.assertLess(abs(float(aslm.sum(dtype=np.float64)) - 1.0), 1e-5)
+        self.assertFalse(np.allclose(aslm, light_sheet))
+
+        def marginal_variance(psf, axis):
+            other_axes = tuple(a for a in range(3) if a != axis)
+            marginal = psf.sum(axis=other_axes, dtype=np.float64)
+            idx = np.arange(marginal.shape[0], dtype=np.float64)
+            centroid = float((marginal * idx).sum() / marginal.sum())
+            return float(
+                (marginal * (idx - centroid) ** 2).sum() / marginal.sum()
+            )
+
+        # Deviation from 07-03-PLAN.md's literal text, verified directly
+        # against this implementation (see 07-03-SUMMARY.md "Deviations"):
+        # the ASLM gate is applied to axis `gate_axis` in the PRE-rotation
+        # frame (seeds._apply_aslm_slit_gate runs before rotate_illumination
+        # in generate_psf_seed). For the four legacy cardinal directions the
+        # subsequent rotation is an exact 90-degree axis swap, so the
+        # narrowed pre-rotation axis and the narrowed post-rotation axis
+        # happen to share the same index. For a genuinely oblique direction
+        # like this one, rotate_illumination's isotropic pipeline instead
+        # smears that pre-rotation axis across all three post-rotation axes,
+        # weighted by seeds._rotation_matrix(...)[:, gate_axis] -- so the
+        # array axis that actually ends up narrowed is
+        # argmax(abs(rotation_matrix[:, gate_axis])), not gate_axis itself.
+        # Verified empirically (scratchpad, this session): forcing
+        # slit_axis=2 (this direction's auto-resolved gate_axis) leaves the
+        # final axis-2 marginal variance UNCHANGED relative to light_sheet
+        # (8.371 vs 8.359 -- no real narrowing), while the final axis-0
+        # marginal variance drops by ~73% (0.506 vs 1.878), exactly matching
+        # this formula's prediction of narrowed_axis=0. Measuring against
+        # the literal gate_axis would falsely fail a correctly-narrowing
+        # implementation; measuring against the true post-rotation axis
+        # proves the gate is genuinely locked to the beam without weakening
+        # the assertion.
+        rotation = seeds._rotation_matrix(70.0, 40.0)
+        narrowed_axis = int(np.argmax(np.abs(rotation[:, gate_axis])))
+
+        self.assertLess(
+            marginal_variance(aslm, narrowed_axis),
+            marginal_variance(light_sheet, narrowed_axis),
         )
 
 

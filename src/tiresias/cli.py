@@ -65,10 +65,16 @@ def _add_optical_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--slit-width-px", dest="slit_width_px", type=int, default=None)
     parser.add_argument("--slit-axis", dest="slit_axis", type=int, default=None)
     parser.add_argument(
-        "--light-sheet-angle",
-        dest="light_sheet_angle",
+        "--illumination-polar-deg",
+        dest="polar_deg",
         type=float,
         default=90.0,
+    )
+    parser.add_argument(
+        "--illumination-azimuthal-deg",
+        dest="azimuthal_deg",
+        type=float,
+        default=0.0,
     )
 
 
@@ -164,7 +170,8 @@ def estimate_psf_main(argv: Sequence[str] | None = None) -> None:
             psf_size_z=args.psf_size_z,
             psf_size_xy=args.psf_size_xy,
             background=args.background,
-            light_sheet_angle=args.light_sheet_angle,
+            polar_deg=args.polar_deg,
+            azimuthal_deg=args.azimuthal_deg,
             slit_width=args.slit_width,
             slit_width_px=args.slit_width_px,
             slit_axis=args.slit_axis,
@@ -243,7 +250,8 @@ def deconvolve_main(argv: Sequence[str] | None = None) -> None:
             psf_size_z=args.psf_size_z,
             psf_size_xy=args.psf_size_xy,
             background=args.background,
-            light_sheet_angle=args.light_sheet_angle,
+            polar_deg=args.polar_deg,
+            azimuthal_deg=args.azimuthal_deg,
             slit_width=args.slit_width,
             slit_width_px=args.slit_width_px,
             slit_axis=args.slit_axis,
