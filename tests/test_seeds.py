@@ -1135,19 +1135,13 @@ class SeedTests(unittest.TestCase):
         self.assertTrue(np.allclose(axis2_profile, axis2_profile[0]))
 
         # Exact-tie sub-case: (polar_deg=90, azimuthal_deg=45) has equal Y
-        # and X direction components. D-05's tie-break resolves this to axis
-        # 1 (Y) -- pinned here by computing the expected axis directly from
-        # the direction vector, rather than hardcoding it blind, so the test
-        # stays honest if the direction convention were ever changed. A
-        # future hand-rolled tie-break rule that disagrees with this goes
-        # red. (07-02-SUMMARY.md: the actual tie-break is a
-        # RIGHT_ANGLE_TOLERANCE-based snap-before-argmax, not the bare
-        # numpy.argmax 07-RESEARCH.md's table assumed -- but for this
-        # specific tie, both formulations agree on axis 1, verified directly
-        # against seeds._resolve_slit_axis below.)
+        # and X direction components. This is resolved by
+        # seeds._resolve_slit_axis's tolerance-based snap-before-argmax
+        # (RIGHT_ANGLE_TOLERANCE), not a bare argmax -- a bare
+        # np.argmax(np.abs(direction)) at this exact tie is not portable
+        # across platforms (Windows and Linux libm sin/cos differ by 1 ULP
+        # here, flipping the tie-break).
         tie_direction = seeds._spherical_direction(90.0, 45.0)
-        expected_tie_axis = int(np.argmax(np.abs(tie_direction)))
-        self.assertEqual(expected_tie_axis, 1)
         self.assertEqual(seeds._resolve_slit_axis(tie_direction), 1)
 
         tie_captured = self._capture_aslm_gate(polar_deg=90.0, azimuthal_deg=45.0)
