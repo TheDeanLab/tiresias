@@ -42,14 +42,16 @@ import numpy as np
 
 from tiresias import generate_psf_seed
 
-# D-07: realistic optical parameters reused verbatim from docs/usage.md's
-# Python API examples (identical to examples/light_sheet_vs_aslm.py's COMMON;
-# duplicated here per the single-file PEP 723 philosophy -- no shared helper
-# module between the two scripts).
+# D-07: optical parameters originate from docs/usage.md's Python API examples,
+# for baseline consistency with the existing documentation -- except the two
+# aperture entries below, which are deliberately raised for this demo and no
+# longer track the docs (identical to examples/light_sheet_vs_aslm.py's
+# COMMON; duplicated here per the single-file PEP 723 philosophy -- no shared
+# helper module between the two scripts).
 COMMON = {
     "na": 1.0,
-    "detection_na": 1.0,
-    "illumination_na": 0.2,
+    "detection_na": 1.1,
+    "illumination_na": 0.6,
     "wavelength": 0.561,
     "ni": 1.33,
     "ns": 1.33,
@@ -91,7 +93,7 @@ def axial_fwhm(psf: np.ndarray, dz: float) -> float | None:
 
     Locates the true peak with `np.unravel_index(np.argmax(psf), psf.shape)`
     rather than `shape // 2` -- for the D-07 parameters the peak sits at
-    (Y, X) = (63, 63), not the geometric centre (64, 64), and the peak Z
+    (Y, X) = (63, 64), not the geometric centre (64, 64), and the peak Z
     index itself migrates across this sweep (D-09, RESEARCH.md Pitfall 3).
     Finds the half-maximum crossing on each side of the peak by walking
     outward and linearly interpolating between the last above-half-maximum

@@ -42,12 +42,14 @@ from matplotlib.colors import LogNorm
 import tiresias
 from tiresias import generate_psf_seed
 
-# D-07: realistic optical parameters reused verbatim from docs/usage.md's
-# Python API examples, for consistency with the existing documentation.
+# D-07: optical parameters originate from docs/usage.md's Python API examples,
+# for baseline consistency with the existing documentation -- except the two
+# aperture entries below, which are deliberately raised for this demo and no
+# longer track the docs.
 COMMON = {
     "na": 1.0,
-    "detection_na": 1.0,
-    "illumination_na": 0.2,
+    "detection_na": 1.1,
+    "illumination_na": 0.6,
     "wavelength": 0.561,
     "ni": 1.33,
     "ns": 1.33,
@@ -93,7 +95,7 @@ def axial_profile(seed: np.ndarray) -> np.ndarray:
 
     Locates the global peak with `np.unravel_index(np.argmax(seed), seed.shape)`
     rather than `shape // 2` -- for the D-07 parameters the true peak sits at
-    (Y, X) = (63, 63), not the geometric centre (64, 64), and the peak Z index
+    (Y, X) = (63, 64), not the geometric centre (64, 64), and the peak Z index
     itself migrates with `slit_width` (see RESEARCH.md Common Pitfalls #3).
     """
     peak_z, peak_y, peak_x = np.unravel_index(np.argmax(seed), seed.shape)
