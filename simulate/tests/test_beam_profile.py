@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import unittest
 import warnings
 from pathlib import Path
@@ -10,6 +11,37 @@ import numpy as np
 
 from simulate import beam_profile
 from tiresias import seeds
+
+
+def _load_ring_free_width_baseline():
+    """Load the MEAS-04 regression fixture captured by plan 09-01 Task 1.
+
+    Loaded by path, never by package import -- simulate/tests/fixtures/ has
+    no __init__.py, mirroring tests/test_seeds.py::_load_legacy_rotation_baseline.
+    """
+    fixture_path = Path(__file__).parent / "fixtures" / "ring_free_width_baseline.json"
+    with fixture_path.open() as handle:
+        return json.load(handle)
+
+
+def _load_ringed_unbounded_baseline():
+    """Load the D-08 ringed pre-fix widths_um fixture captured by plan 09-01 Task 2.
+
+    Loaded by path, never by package import, mirroring
+    _load_ring_free_width_baseline() above.
+    """
+    fixture_path = Path(__file__).parent / "fixtures" / "ringed_unbounded_baseline.json"
+    with fixture_path.open() as handle:
+        return json.load(handle)
+
+
+def _synthetic_volume(*profiles: list[float]) -> np.ndarray:
+    """Build a (len(profiles), 15, 15) float32 volume with each profile along Y at X=7."""
+    volume = np.zeros((len(profiles), 15, 15), dtype=np.float32)
+    for z, profile in enumerate(profiles):
+        volume[z, :, 7] = profile
+    return volume
+
 
 # D-07-style shared realistic optical parameters, mirroring how the example
 # scripts hold a COMMON dict, so no test re-types them.
@@ -21,6 +53,41 @@ COMMON = dict(
     dz=0.300,
     psf_size_xy=128,
 )
+
+# Synthetic profile constants (15 samples, peak 1.0 at index 7), verified
+# against a probe implementation during planning (09-02-PLAN.md <context>).
+_Y_CLEAN = [0.0, 0.01, 0.02, 0.05, 0.1, 0.3, 0.7, 1.0, 0.7, 0.3, 0.1, 0.05, 0.02, 0.01, 0.0]
+_Y_MERGED_RING = [0.0, 0.05, 0.1, 0.3, 0.7, 0.6, 0.8, 1.0, 0.8, 0.6, 0.7, 0.3, 0.1, 0.05, 0.0]
+_Y_MIXED_SIDES = [0.6, 0.62, 0.65, 0.7, 0.75, 0.8, 0.9, 1.0, 0.8, 0.6, 0.7, 0.3, 0.1, 0.05, 0.0]
+_Y_EDGE_NO_MIN = [0.0, 0.01, 0.02, 0.05, 0.1, 0.3, 0.7, 1.0, 0.9, 0.8, 0.75, 0.7, 0.65, 0.62, 0.6]
+_Y_WOBBLE_SUB_TOL = [
+    0.0, 0.01, 0.02, 0.05, 0.1, 0.3, 0.7, 1.0, 0.95, 0.95 - 4e-7, 0.95, 0.3, 0.1, 0.05, 0.0,
+]
+_Y_DIP_ABOVE_TOL = [0.0, 0.01, 0.02, 0.05, 0.1, 0.3, 0.7, 1.0, 0.95, 0.94, 0.95, 0.3, 0.1, 0.05, 0.0]
+_Y_PEAK_RELATIVE = [
+    0.0, 0.01, 0.02, 0.05, 0.1, 0.3, 0.7, 1.0, 0.8, 0.6, 0.6 + 8e-7, 0.3, 0.1, 0.05, 0.0,
+]
+_Y_FIRST_MIN_WINS = [0.0, 0.01, 0.02, 0.05, 0.1, 0.3, 0.7, 1.0, 0.8, 0.7, 0.75, 0.3, 0.1, 0.2, 0.15]
+_Y_MIN_BELOW_HALF = [0.0, 0.01, 0.02, 0.05, 0.1, 0.3, 0.7, 1.0, 0.8, 0.4, 0.45, 0.1, 0.05, 0.02, 0.0]
+_Y_ZERO = [0.0] * 15
+
+
+def _measure_synthetic(volume: np.ndarray) -> tuple[np.ndarray, list[str]]:
+    """Mock make_psf with volume, measure it, and return (widths_um, warning message strings)."""
+    with mock.patch.object(seeds.pm, "make_psf", return_value=volume):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _positions_um, widths_um = beam_profile.measure_beam_width_profile(
+                illumination_na=0.4,
+                wavelength=0.561,
+                ni=1.33,
+                ns=1.33,
+                dxy=0.108,
+                dz=0.300,
+                psf_size_z=volume.shape[0],
+                psf_size_xy=volume.shape[1],
+            )
+    return widths_um, [str(w.message) for w in caught]
 
 
 class BeamProfileTests(unittest.TestCase):
@@ -512,6 +579,283 @@ class BeamProfileTests(unittest.TestCase):
         expected_positions = [round(i * 0.300, 4) for i in range(3)]
         for position in expected_positions:
             self.assertIn(str(position), text)
+
+    def test_ring_free_widths_match_the_pre_fix_baseline_bit_for_bit(self):
+        from simulate import measure_beam_width_profile
+
+        baseline = _load_ring_free_width_baseline()
+        self.assertEqual(len(baseline["beam_profile"]), 14)
+
+        for key, entry in baseline["beam_profile"].items():
+            with self.subTest(combo=key):
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    _positions_um, widths_um = measure_beam_width_profile(**entry["params"])
+
+                # MEAS-04 demands bit-identical output against the frozen
+                # pre-fix fixture -- allclose would tolerate a silent
+                # regression that assert_array_equal catches.
+                np.testing.assert_array_equal(
+                    widths_um, np.array(entry["widths_um"], dtype=np.float64)
+                )
+                self.assertEqual(len(caught), 0)
+
+    def test_synthetic_merged_ring_is_tagged_central_lobe_too_narrow(self):
+        # Pre-fix, this profile measured 7 * dxy = 0.756 um (ring-inclusive:
+        # the unbounded search walked straight past the shallow merged ring
+        # at indices 5/9 to the deeper minimum further out). Bounding the
+        # search to the first flanking local minimum stops it there instead,
+        # and the lobe never reaches half-max within that bound.
+        volume = _synthetic_volume(_Y_MERGED_RING, _Y_MERGED_RING, _Y_MERGED_RING)
+
+        with mock.patch.object(seeds.pm, "make_psf", return_value=volume):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                _positions_um, widths_um = beam_profile.measure_beam_width_profile(
+                    illumination_na=0.4,
+                    wavelength=0.561,
+                    ni=1.33,
+                    ns=1.33,
+                    dxy=0.108,
+                    dz=0.300,
+                    psf_size_z=3,
+                    psf_size_xy=15,
+                )
+
+        self.assertTrue(np.isnan(widths_um).all())
+        self.assertEqual(len(caught), 1)
+        self.assertEqual(
+            str(caught[0].message),
+            "measure_beam_width_profile: central lobe too narrow to reach "
+            "half-max at (um): [0.0, 0.3, 0.6]",
+        )
+
+    def test_real_ringed_psf_bounding_only_blanks_ring_merged_positions(self):
+        baseline = _load_ringed_unbounded_baseline()
+        ringed = baseline["ringed_widths"]["beam_profile"]
+
+        for key, entry in ringed.items():
+            with self.subTest(combo=key):
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    positions_um, bounded = beam_profile.measure_beam_width_profile(
+                        **entry["params"]
+                    )
+
+                unbounded = np.array(entry["widths_um"], dtype=np.float64)
+                finite = np.isfinite(bounded)
+
+                # Bounding may only ever turn a finite reading into NaN,
+                # never change a finite value (the bounded index array is
+                # always a prefix of the unbounded one, and _crossing
+                # returns the first below-half-max sample in either case).
+                np.testing.assert_array_equal(bounded[finite], unbounded[finite])
+
+                newly_nan = ~finite & np.isfinite(unbounded)
+                # Planning measured 18/61 (na0.4_z61) and 12/61 (na0.6_z61)
+                # newly-NaN positions; deliberately not pinned to those exact
+                # counts so a psfmodels version bump does not break this
+                # test -- only that bounding has a real, non-vacuous effect.
+                self.assertGreaterEqual(int(newly_nan.sum()), 1)
+
+                self.assertEqual(len(caught), 1)
+                text = str(caught[0].message)
+                self.assertTrue(text.startswith("measure_beam_width_profile: "))
+                parts = text[len("measure_beam_width_profile: ") :].split("; ")
+                for part in parts:
+                    self.assertFalse(
+                        part.startswith("no local minimum before array edge")
+                    )
+                narrow_prefix = "central lobe too narrow to reach half-max at (um): "
+                narrow_part = next(p for p in parts if p.startswith(narrow_prefix))
+                warned_positions = ast.literal_eval(
+                    narrow_part[len(narrow_prefix) :]
+                )
+                expected_positions = {
+                    round(float(p), 6) for p in positions_um[newly_nan]
+                }
+                self.assertEqual(set(warned_positions), expected_positions)
+
+                # For every newly-NaN position, at least one side's
+                # _bound_to_first_local_minimum call must have actually
+                # found a flanking minimum before half-max -- proving the
+                # NaN comes from the bounded search, not some other cause.
+                psf = seeds.generate_theoretical_psf(
+                    detection_na=entry["params"]["illumination_na"],
+                    **{
+                        k: v
+                        for k, v in entry["params"].items()
+                        if k != "illumination_na"
+                    },
+                )
+                peak_y, peak_x = np.unravel_index(
+                    np.argmax(psf), psf.shape
+                )[1:]
+                half_max_scale = 0.5
+                newly_nan_indices = np.where(newly_nan)[0]
+                for z in newly_nan_indices:
+                    profile = psf[z, :, peak_x].astype(np.float64)
+                    peak_value = profile[peak_y]
+                    half_max = peak_value * half_max_scale
+                    left_indices = np.arange(peak_y, -1, -1)
+                    right_indices = np.arange(peak_y, profile.size)
+                    left_bounded, left_found = beam_profile._bound_to_first_local_minimum(
+                        profile, left_indices, peak_value
+                    )
+                    right_bounded, right_found = beam_profile._bound_to_first_local_minimum(
+                        profile, right_indices, peak_value
+                    )
+                    found_and_above_half_max = (
+                        left_found and (profile[left_bounded] >= half_max).all()
+                    ) or (
+                        right_found and (profile[right_bounded] >= half_max).all()
+                    )
+                    self.assertTrue(
+                        found_and_above_half_max,
+                        f"combo={key!r} z={z!r}: expected at least one side to "
+                        "find a bounding minimum before half-max",
+                    )
+
+    def test_synthetic_sub_tolerance_wobble_is_not_a_lobe_boundary(self):
+        volume = _synthetic_volume(_Y_WOBBLE_SUB_TOL, _Y_WOBBLE_SUB_TOL, _Y_WOBBLE_SUB_TOL)
+        widths_um, messages = _measure_synthetic(volume)
+
+        self.assertEqual(messages, [])
+        for width in widths_um:
+            self.assertAlmostEqual(float(width), 0.5607692, delta=1e-6)
+        self.assertEqual(beam_profile._LOBE_MIN_RTOL, 1e-6)
+
+        # Non-vacuity guard: without this, the test could pass only because
+        # float32 rounding erased the deliberate sub-tolerance wobble.
+        p = seeds.normalise_psf(volume)[0, :, 7].astype(np.float64)
+        self.assertTrue(p[8] > p[9] < p[10])
+        self.assertLess(p[10] - p[9], beam_profile._LOBE_MIN_RTOL * p[7])
+
+    def test_synthetic_lobe_tolerance_is_load_bearing(self):
+        volume = _synthetic_volume(_Y_WOBBLE_SUB_TOL, _Y_WOBBLE_SUB_TOL, _Y_WOBBLE_SUB_TOL)
+        with mock.patch.object(beam_profile, "_LOBE_MIN_RTOL", 0.0):
+            widths_um, messages = _measure_synthetic(volume)
+
+        self.assertTrue(np.isnan(widths_um).all())
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(
+            messages[0],
+            "measure_beam_width_profile: central lobe too narrow to reach "
+            "half-max at (um): [0.0, 0.3, 0.6]",
+        )
+
+    def test_synthetic_tolerance_is_relative_to_the_peak_not_the_local_value(self):
+        volume = _synthetic_volume(_Y_PEAK_RELATIVE, _Y_PEAK_RELATIVE, _Y_PEAK_RELATIVE)
+        widths_um, messages = _measure_synthetic(volume)
+
+        self.assertEqual(messages, [])
+        for width in widths_um:
+            self.assertAlmostEqual(float(width), 0.522, delta=1e-6)
+
+        p = seeds.normalise_psf(volume)[0, :, 7].astype(np.float64)
+        self.assertLess(p[10] - p[9], 1e-6 * p[7])
+        self.assertGreater(p[10] - p[9], 1e-6 * p[9])
+
+    def test_synthetic_above_tolerance_dip_bounds_the_lobe(self):
+        volume = _synthetic_volume(_Y_DIP_ABOVE_TOL, _Y_DIP_ABOVE_TOL, _Y_DIP_ABOVE_TOL)
+        widths_um, messages = _measure_synthetic(volume)
+
+        self.assertTrue(np.isnan(widths_um).all())
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(
+            messages[0],
+            "measure_beam_width_profile: central lobe too narrow to reach "
+            "half-max at (um): [0.0, 0.3, 0.6]",
+        )
+
+    def test_synthetic_first_flanking_minimum_wins_over_a_deeper_one(self):
+        # A deepest-minimum search would bound at index 12 and measure
+        # 0.546 um; first-found wins instead, mirroring rayleigh_range.py's
+        # D-07 first-crossing-wins precedent.
+        volume = _synthetic_volume(_Y_FIRST_MIN_WINS, _Y_FIRST_MIN_WINS, _Y_FIRST_MIN_WINS)
+        widths_um, messages = _measure_synthetic(volume)
+
+        self.assertTrue(np.isnan(widths_um).all())
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(
+            messages[0],
+            "measure_beam_width_profile: central lobe too narrow to reach "
+            "half-max at (um): [0.0, 0.3, 0.6]",
+        )
+
+    def test_synthetic_minimum_below_half_max_is_kept_inclusive(self):
+        volume = _synthetic_volume(_Y_MIN_BELOW_HALF, _Y_MIN_BELOW_HALF, _Y_MIN_BELOW_HALF)
+        widths_um, messages = _measure_synthetic(volume)
+
+        self.assertEqual(messages, [])
+        for width in widths_um:
+            self.assertAlmostEqual(float(width), 0.351, delta=1e-6)
+
+    def test_synthetic_side_reaching_the_edge_without_a_minimum_is_tagged_no_local_minimum(self):
+        volume = _synthetic_volume(_Y_EDGE_NO_MIN, _Y_EDGE_NO_MIN, _Y_EDGE_NO_MIN)
+        widths_um, messages = _measure_synthetic(volume)
+
+        self.assertTrue(np.isnan(widths_um).all())
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(
+            messages[0],
+            "measure_beam_width_profile: no local minimum before array edge "
+            "at (um): [0.0, 0.3, 0.6]",
+        )
+
+    def test_synthetic_mixed_side_failure_prefers_no_local_minimum(self):
+        volume = _synthetic_volume(_Y_MIXED_SIDES, _Y_MIXED_SIDES, _Y_MIXED_SIDES)
+        widths_um, messages = _measure_synthetic(volume)
+
+        self.assertTrue(np.isnan(widths_um).all())
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(
+            messages[0],
+            "measure_beam_width_profile: no local minimum before array edge "
+            "at (um): [0.0, 0.3, 0.6]",
+        )
+        self.assertNotIn("central lobe too narrow", messages[0])
+
+    def test_synthetic_zero_peak_slice_is_tagged_no_local_minimum(self):
+        volume = _synthetic_volume(_Y_ZERO, _Y_CLEAN, _Y_CLEAN)
+        widths_um, messages = _measure_synthetic(volume)
+
+        self.assertTrue(np.isnan(widths_um[0]))
+        for width in widths_um[1:]:
+            self.assertAlmostEqual(float(width), 0.324, delta=1e-6)
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(
+            messages[0],
+            "measure_beam_width_profile: no local minimum before array edge "
+            "at (um): [0.0]",
+        )
+
+    def test_synthetic_peak_on_the_y_boundary_is_tagged_no_local_minimum(self):
+        raw = np.zeros((3, 9, 9), dtype=np.float32)
+        raw[:, 0, 4] = 1.0
+        raw[:, 1, 4] = 0.1
+        widths_um, messages = _measure_synthetic(raw)
+
+        self.assertTrue(np.isnan(widths_um).all())
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(
+            messages[0],
+            "measure_beam_width_profile: no local minimum before array edge "
+            "at (um): [0.0, 0.3, 0.6]",
+        )
+
+    def test_synthetic_both_reasons_share_one_grouped_warning(self):
+        volume = _synthetic_volume(_Y_MIXED_SIDES, _Y_MERGED_RING, _Y_CLEAN)
+        widths_um, messages = _measure_synthetic(volume)
+
+        self.assertTrue(np.isnan(widths_um[0]))
+        self.assertTrue(np.isnan(widths_um[1]))
+        self.assertAlmostEqual(float(widths_um[2]), 0.324, delta=1e-6)
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(
+            messages[0],
+            "measure_beam_width_profile: no local minimum before array edge at (um): [0.0]; central lobe too narrow to reach half-max at (um): [0.3]",
+        )
 
 
 if __name__ == "__main__":

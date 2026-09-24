@@ -41,6 +41,46 @@ __all__ = ["measure_gated_beam_width_profile"]
 # wrong question here.
 GATE_AXIS: int = 1
 
+# D-14: private (D-14), not exported -- __all__ below stays unchanged. Defined
+# separately here and again in simulate/beam_profile.py rather than shared
+# (Phase 8 D-04 forbids a cross-module helper for this duplicated crossing
+# loop). The value matches the rtol=1e-6 float32-noise precedent already
+# established in test_gate_axis_is_load_bearing (this file's own test
+# module). It is costly to change: this exact value is baked into the 09-01
+# ring-free MEAS-04 fixture verification and every ringed-profile
+# expectation in this phase's tests, so a different value would require
+# recapturing and re-verifying both.
+_LOBE_MIN_RTOL = 1e-6
+
+
+def _bound_to_first_local_minimum(
+    profile: np.ndarray, indices: np.ndarray, peak_value: float
+) -> tuple[np.ndarray, bool]:
+    """Truncate an outward walk at the first flanking local minimum of the lobe."""
+    # D-02: threshold is computed once per call from the CURRENT module
+    # global (read at call time, never captured as a default-argument
+    # value) so tests can patch _LOBE_MIN_RTOL and see the effect -- this is
+    # the fixed per-slice reference D-02 requires, not a per-step
+    # recomputation relative to a drifting local value.
+    threshold = _LOBE_MIN_RTOL * peak_value
+    for i in range(1, indices.size - 1):
+        if (
+            profile[indices[i - 1]] > profile[indices[i]]
+            and profile[indices[i + 1]] - profile[indices[i]] > threshold
+        ):
+            # Truncation is inclusive of the minimum sample: when the
+            # minimum itself is the first below-half-max sample, excluding
+            # it would drop a valid crossing.
+            return indices[: i + 1], True
+    # The last index can never be a minimum -- no following sample confirms
+    # a rise -- so a walk that reaches the array edge without finding one
+    # falls back to the full, unmodified array. This MEAS-01 array-edge
+    # fallback is what keeps ring-free profiles bit-identical (MEAS-04):
+    # _crossing() then receives exactly the array it received before this
+    # phase. There is deliberately no global scan for a deeper minimum
+    # further out (D-03, and REQUIREMENTS.md Out of Scope).
+    return indices, False
+
 
 def _measure_widths_from_array(
     psf: np.ndarray, dxy: float, positions_um: np.ndarray
@@ -48,10 +88,11 @@ def _measure_widths_from_array(
     """Apply the Phase 5 half-max interpolation loop to an already-prepared array.
 
     Mirrors `beam_profile.py::measure_beam_width_profile`'s fixed-global-peak,
-    per-Z half-max-crossing algorithm exactly, so the public function here and
-    Phase 5's original share one implementation in spirit (this is the
-    documented duplication D-04 calls for, pinned by a dedicated regression
-    test rather than refactored into a shared private helper across modules).
+    per-Z half-max-crossing algorithm, now including the independently
+    duplicated central-lobe bound, so the public function here and Phase 5's
+    original share one implementation in spirit (this is the documented
+    duplication D-04 calls for, pinned by a dedicated regression test rather
+    than refactored into a shared private helper across modules).
     """
     psf_size_z = psf.shape[0]
 
@@ -61,17 +102,21 @@ def _measure_widths_from_array(
     _peak_z, peak_y, peak_x = np.unravel_index(np.argmax(psf), psf.shape)
 
     widths_um = np.full(psf_size_z, np.nan, dtype=np.float64)
-    failed_positions: list[float] = []
+    failed_no_local_minimum: list[float] = []
+    failed_lobe_too_narrow: list[float] = []
 
     for z in range(psf_size_z):
         profile = psf[z, :, peak_x].astype(np.float64)
         peak_value = profile[peak_y]
         if peak_value <= 0:
-            # Round for display only -- positions_um itself stays exact;
-            # float64 multiplication of index * dz can produce artifacts
-            # like 3 * 0.3 == 0.8999999999999999, which would silently fail
-            # to name "0.9" in the warning text below.
-            failed_positions.append(round(float(positions_um[z]), 6))
+            # D-15: no lobe to bound at all -- more fundamental than a
+            # bounded-but-too-narrow lobe (D-05 priority), so this goes to
+            # the no-local-minimum group. Round for display only --
+            # positions_um itself stays exact; float64 multiplication of
+            # index * dz can produce artifacts like
+            # 3 * 0.3 == 0.8999999999999999, which would silently fail to
+            # name "0.9" in the warning text below.
+            failed_no_local_minimum.append(round(float(positions_um[z]), 6))
             continue
         half_max = peak_value / 2.0
 
@@ -90,17 +135,56 @@ def _measure_widths_from_array(
 
         left_indices = np.arange(peak_y, -1, -1)
         right_indices = np.arange(peak_y, profile.size)
-        left_crossing = _crossing(left_indices)
-        right_crossing = _crossing(right_indices)
+        # MEAS-01/02/03: bound each side's outward walk to the first
+        # flanking local minimum (rtol-tolerant) before crossing search --
+        # _crossing itself is untouched, so a bounded finite width is
+        # always bit-identical to the pre-fix width (the bounded index
+        # array is always a prefix of the unbounded one).
+        left_bounded, left_found_minimum = _bound_to_first_local_minimum(
+            profile, left_indices, peak_value
+        )
+        right_bounded, right_found_minimum = _bound_to_first_local_minimum(
+            profile, right_indices, peak_value
+        )
+        left_crossing = _crossing(left_bounded)
+        right_crossing = _crossing(right_bounded)
         if left_crossing is None or right_crossing is None:
-            failed_positions.append(round(float(positions_um[z]), 6))
+            # D-05: priority to the more fundamental failure. A side that
+            # failed to cross AND never found a bounding local minimum
+            # means there was no lobe boundary to search within at all --
+            # tag the whole position "no local minimum before array edge".
+            # Otherwise both sides that failed to cross did find a
+            # bounding minimum, so the lobe itself is genuinely too narrow
+            # to reach half-max -- "central lobe too narrow to reach
+            # half-max".
+            no_minimum_on_a_failed_side = (
+                left_crossing is None and not left_found_minimum
+            ) or (right_crossing is None and not right_found_minimum)
+            position_um = round(float(positions_um[z]), 6)
+            if no_minimum_on_a_failed_side:
+                failed_no_local_minimum.append(position_um)
+            else:
+                failed_lobe_too_narrow.append(position_um)
             continue
         widths_um[z] = (right_crossing - left_crossing) * dxy
 
-    if failed_positions:
+    # D-09 (Phase 5)/D-04 (Phase 9): name every failed position, not just
+    # the first, and group by reason -- purely additive surfacing, the
+    # array itself stays untouched (no clamping, no extrapolation, no
+    # dropping of failed entries).
+    message_parts = []
+    if failed_no_local_minimum:
+        message_parts.append(
+            f"no local minimum before array edge at (um): {failed_no_local_minimum!r}"
+        )
+    if failed_lobe_too_narrow:
+        message_parts.append(
+            "central lobe too narrow to reach half-max at (um): "
+            f"{failed_lobe_too_narrow!r}"
+        )
+    if message_parts:
         warnings.warn(
-            "measure_gated_beam_width_profile: no half-max crossing found at "
-            f"position(s) (um): {failed_positions!r}",
+            "measure_gated_beam_width_profile: " + "; ".join(message_parts),
             stacklevel=2,
         )
 
