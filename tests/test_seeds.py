@@ -1121,9 +1121,297 @@ class SeedTests(unittest.TestCase):
             "ni", "ns", "ni0", "tg", "tg0", "ng", "ng0", "ti0",
             "oversample_factor", "psf_model", "dxy", "dz", "psf_size_z",
             "psf_size_xy", "background", "polar_deg", "azimuthal_deg",
-            "slit_width", "slit_axis", "slit_width_px",
+            "slit_width", "slit_axis", "slit_width_px", "emitter_offset",
         )
         self.assertEqual(parameter_names, expected_parameter_names)
+
+    def test_generate_theoretical_psf_focus_offset_zero_keeps_the_integer_z_request(self):
+        raw = np.ones((5, 7, 7), dtype=np.float32)
+
+        with mock.patch.object(seeds.pm, "make_psf", return_value=raw) as make_psf:
+            seeds.generate_theoretical_psf(
+                detection_na=1.0,
+                wavelength=0.561,
+                ni=1.33,
+                ns=1.33,
+                dxy=0.108,
+                dz=0.3,
+                psf_size_z=5,
+                psf_size_xy=7,
+                focus_offset=0.0,
+            )
+        self.assertEqual(make_psf.call_args.kwargs["z"], 5)
+        self.assertIn("dz", make_psf.call_args.kwargs)
+
+        with mock.patch.object(seeds.pm, "make_psf", return_value=raw) as make_psf:
+            seeds.generate_theoretical_psf(
+                detection_na=1.0,
+                wavelength=0.561,
+                ni=1.33,
+                ns=1.33,
+                dxy=0.108,
+                dz=0.3,
+                psf_size_z=5,
+                psf_size_xy=7,
+                focus_offset=0.5,
+            )
+        lim = (5 - 1) * 0.3 / 2
+        expected_z = np.linspace(-lim + 0.5, lim + 0.5, 5)
+        np.testing.assert_array_equal(make_psf.call_args.kwargs["z"], expected_z)
+        self.assertNotIn("dz", make_psf.call_args.kwargs)
+
+        with mock.patch.object(seeds.pm, "make_psf", return_value=raw) as make_psf:
+            with self.assertRaisesRegex(ValueError, "focus_offset must be finite"):
+                seeds.generate_theoretical_psf(
+                    detection_na=1.0,
+                    wavelength=0.561,
+                    ni=1.33,
+                    ns=1.33,
+                    dxy=0.108,
+                    dz=0.3,
+                    psf_size_z=5,
+                    psf_size_xy=7,
+                    focus_offset=float("nan"),
+                )
+            make_psf.assert_not_called()
+
+    def test_emitter_offset_validation_rejects_before_any_psf_generation(self):
+        detection = np.ones((5, 5, 5), dtype=np.float32)
+        base_kwargs = dict(
+            na=1.0,
+            detection_na=1.0,
+            illumination_na=0.2,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=3,
+            psf_model="vectorial",
+            dxy=0.108,
+            dz=0.3,
+            psf_size_z=5,
+            psf_size_xy=5,
+            background=0.0,
+            polar_deg=90.0,
+            azimuthal_deg=0.0,
+        )
+
+        cases = [
+            (
+                "single, nan",
+                "single",
+                {"emitter_offset": float("nan")},
+                "emitter_offset must be finite",
+            ),
+            (
+                "light_sheet, inf",
+                "light_sheet",
+                {"emitter_offset": float("inf")},
+                "emitter_offset must be finite",
+            ),
+            (
+                "aslm, nan",
+                "aslm",
+                {"emitter_offset": float("nan"), "slit_width": 0.9},
+                "emitter_offset must be finite",
+            ),
+            (
+                "single, nonzero",
+                "single",
+                {"emitter_offset": 1.0},
+                "emitter_offset applies only to",
+            ),
+        ]
+
+        for label, psf_mode, extra_kwargs, expected_message in cases:
+            with self.subTest(label=label):
+                with mock.patch.object(
+                    seeds,
+                    "generate_theoretical_psf",
+                    return_value=detection,
+                ) as generate_theoretical_psf:
+                    with self.assertRaisesRegex(ValueError, expected_message):
+                        seeds.generate_psf_seed(
+                            psf_mode=psf_mode, **base_kwargs, **extra_kwargs
+                        )
+                    generate_theoretical_psf.assert_not_called()
+
+    def test_emitter_offset_zero_is_bit_identical_to_omitting_it(self):
+        # Real psfmodels, parameters as in plan 08.1-01's broadside_aniso SC5
+        # config, with slit_width=0.9 added for aslm.
+        common_kwargs = dict(
+            na=1.0,
+            detection_na=1.0,
+            illumination_na=0.2,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=1,
+            psf_model="vectorial",
+            dxy=0.108,
+            dz=0.3,
+            psf_size_z=15,
+            psf_size_xy=15,
+            background=0.0,
+            polar_deg=90.0,
+            azimuthal_deg=0.0,
+        )
+
+        for psf_mode, extra in (
+            ("single", {}),
+            ("light_sheet", {}),
+            ("aslm", {"slit_width": 0.9}),
+        ):
+            with self.subTest(psf_mode=psf_mode):
+                omitted = seeds.generate_psf_seed(
+                    psf_mode=psf_mode, **common_kwargs, **extra
+                )
+                explicit_zero = seeds.generate_psf_seed(
+                    psf_mode=psf_mode, emitter_offset=0.0, **common_kwargs, **extra
+                )
+                np.testing.assert_array_equal(omitted, explicit_zero)
+
+    def test_aslm_seed_is_invariant_to_emitter_offset(self):
+        # D-07: the ASLM waist is swept over the whole simulated window with
+        # the rolling-shutter slit perfectly synchronized to the emitter's
+        # row, so the ASLM seed is bit-identical for every finite
+        # emitter_offset.
+        common_kwargs = dict(
+            na=1.0,
+            detection_na=1.0,
+            illumination_na=0.2,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=1,
+            psf_model="vectorial",
+            dxy=0.108,
+            dz=0.3,
+            psf_size_z=15,
+            psf_size_xy=15,
+            background=0.0,
+            polar_deg=90.0,
+            azimuthal_deg=0.0,
+            slit_width=0.9,
+        )
+
+        baseline = seeds.generate_psf_seed(
+            psf_mode="aslm", emitter_offset=0.0, **common_kwargs
+        )
+        for emitter_offset in (5.0, -12.0):
+            with self.subTest(emitter_offset=emitter_offset):
+                offset_seed = seeds.generate_psf_seed(
+                    psf_mode="aslm", emitter_offset=emitter_offset, **common_kwargs
+                )
+                np.testing.assert_array_equal(offset_seed, baseline)
+
+    def test_light_sheet_offset_changes_the_seed(self):
+        common_kwargs = dict(
+            na=1.0,
+            detection_na=1.0,
+            illumination_na=0.2,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=1,
+            psf_model="vectorial",
+            dxy=0.108,
+            dz=0.3,
+            psf_size_z=15,
+            psf_size_xy=15,
+            background=0.0,
+            polar_deg=90.0,
+            azimuthal_deg=0.0,
+        )
+
+        baseline = seeds.generate_psf_seed(
+            psf_mode="light_sheet", emitter_offset=0.0, **common_kwargs
+        )
+        offset_seed = seeds.generate_psf_seed(
+            psf_mode="light_sheet", emitter_offset=1.0, **common_kwargs
+        )
+        self.assertFalse(np.allclose(baseline, offset_seed))
+
+    def test_light_sheet_offset_is_applied_before_rotation_at_an_oblique_direction(self):
+        # D-02: the offset is applied in the pre-rotation frame, before
+        # rotate_illumination, so it stays correct at an oblique direction.
+        arm_kwargs = dict(
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=1,
+            psf_model="vectorial",
+            dxy=0.108,
+            dz=0.3,
+            psf_size_z=15,
+            psf_size_xy=15,
+            background=0.0,
+        )
+        detection_na = 1.0
+        illumination_na = 0.2
+        emitter_offset = 1.0
+
+        actual = seeds.generate_psf_seed(
+            psf_mode="light_sheet",
+            na=detection_na,
+            detection_na=detection_na,
+            illumination_na=illumination_na,
+            polar_deg=70.0,
+            azimuthal_deg=40.0,
+            emitter_offset=emitter_offset,
+            **arm_kwargs,
+        )
+
+        detection_arm = seeds.generate_theoretical_psf(
+            detection_na=detection_na,
+            illumination_na=illumination_na,
+            **arm_kwargs,
+        )
+        illumination_arm = seeds.generate_theoretical_psf(
+            detection_na=illumination_na,
+            illumination_na=illumination_na,
+            focus_offset=emitter_offset,
+            **arm_kwargs,
+        )
+        rotated = seeds.rotate_illumination(
+            illumination_arm,
+            polar_deg=70.0,
+            azimuthal_deg=40.0,
+            dxy=arm_kwargs["dxy"],
+            dz=arm_kwargs["dz"],
+        )
+        expected = seeds.normalise_psf(detection_arm * rotated)
+
+        np.testing.assert_array_equal(actual, expected)
 
     def test_generate_psf_seed_docstring_states_perfect_sync_assumption(self):
         # G-01-24: the negative test above (no timing-jitter *parameter*) is

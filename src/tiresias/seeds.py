@@ -56,9 +56,17 @@ def generate_theoretical_psf(
     psf_size_z: int = 61,
     psf_size_xy: int = 128,
     background: float = 0.0,
+    focus_offset: float = 0.0,
 ) -> np.ndarray:
-    """Generate a normalized 3-D PSF seed with ``psfmodels.make_psf``."""
+    """Generate a normalized 3-D PSF seed with ``psfmodels.make_psf``.
+
+    ``focus_offset`` shifts every sampled Z plane by a constant, in the same
+    units as ``dz`` (D-10); 0.0 (the default) keeps every existing caller
+    bit-identical.
+    """
     del illumination_na
+    if not math.isfinite(focus_offset):
+        raise ValueError(f"focus_offset must be finite, got {focus_offset!r}")
     detection_na = detection_na if detection_na is not None else na
     required_values = {
         "detection_na": detection_na,
@@ -85,6 +93,15 @@ def generate_theoretical_psf(
         "oversample_factor": oversample_factor,
         "model": psf_model,
     }
+    if focus_offset != 0.0:
+        # D-10: plane i is sampled at defocus (i - (psf_size_z - 1) / 2) * dz
+        # + focus_offset -- the same psfmodels.tot_psf x_offset convention
+        # (_centered_zv's own pz shift, generalized off of the integer-z
+        # path). psfmodels emits a UserWarning "dz is ignored" whenever dz
+        # is passed alongside a z sequence, so drop it here.
+        lim = (psf_size_z - 1) * dz / 2
+        requested_kwargs["z"] = np.linspace(-lim + focus_offset, lim + focus_offset, psf_size_z)
+        del requested_kwargs["dz"]
     optional_kwargs = {
         "ns": ns,
         "ni0": ni0,
@@ -432,6 +449,7 @@ def generate_psf_seed(
     slit_width: float | None = None,
     slit_axis: int | None = None,
     slit_width_px: int | None = None,
+    emitter_offset: float = 0.0,
 ) -> np.ndarray:
     """Create a single-detection, light-sheet, or ASLM blind-estimation seed PSF.
 
@@ -449,10 +467,32 @@ def generate_psf_seed(
     ``light_sheet`` seed. Timing jitter, shutter/beam desynchronization, and
     sweep-velocity error are not modelled and are explicitly out of scope
     for this milestone.
+
+    ``emitter_offset`` (D-10) is the emitter's offset from the illumination
+    waist along the beam propagation direction, in the same units as
+    ``dxy``/``dz``. A positive value moves the waist to a smaller
+    pre-rotation axis-0 index, matching ``psfmodels.tot_psf``'s ``x_offset``
+    convention. It is applied in the pre-rotation frame, so it follows the
+    true beam direction (D-02) rather than a camera-snapped axis. ``aslm``
+    is invariant to it (D-07): the swept waist tracks the emitter's slit
+    across the whole simulated window under the perfectly synchronized
+    rolling-shutter assumption, so the effective illumination relative to
+    the emitter does not depend on where the emitter sits. ``single`` has no
+    illumination beam and requires 0.0.
     """
     if psf_mode not in ("single", "light_sheet", "aslm"):
         raise ValueError(
             f"Unsupported psf_mode={psf_mode!r}; expected one of 'single', 'light_sheet', 'aslm'"
+        )
+
+    # D-10: validate before generating any PSF, mirroring the existing
+    # angle-validation pattern below.
+    if not math.isfinite(emitter_offset):
+        raise ValueError(f"emitter_offset must be finite, got {emitter_offset!r}")
+    if psf_mode == "single" and emitter_offset != 0.0:
+        raise ValueError(
+            "emitter_offset applies only to psf_mode='light_sheet' or 'aslm' "
+            f"(single has no illumination beam), got emitter_offset={emitter_offset!r}"
         )
 
     # D-07/T-07-02: validate before generating any PSF, extended here to the
@@ -514,6 +554,13 @@ def generate_psf_seed(
         psf_size_z=psf_size_z,
         psf_size_xy=psf_size_xy,
         background=background,
+        # D-10: only light_sheet forwards the off-waist emitter offset. D-07:
+        # the ASLM waist is swept over the whole simulated window with the
+        # rolling-shutter slit perfectly synchronized to the emitter's row,
+        # so the effective illumination relative to the emitter does not
+        # depend on where the emitter sits -- the ASLM seed is therefore
+        # intentionally invariant to emitter_offset, and always forwards 0.0.
+        focus_offset=emitter_offset if psf_mode == "light_sheet" else 0.0,
     )
     if psf_mode == "aslm":
         illumination = _apply_aslm_slit_gate(illumination, slit_fwhm, dz)
