@@ -135,7 +135,6 @@ Common PSF-estimation options:
 | `--psf-mode` | `single` | Theoretical seed mode: `single`, `light_sheet`, or `aslm`. The default preserves existing behavior exactly. |
 | `--slit-width` | none | ASLM slit gate FWHM in physical units (same units as `--dxy`/`--dz`). Applies only to `aslm` mode; exactly one of `--slit-width` or `--slit-width-px` must be supplied. |
 | `--slit-width-px` | none | ASLM slit gate FWHM as a pixel count, converted to physical units via `--dxy`. Applies only to `aslm` mode; exactly one of `--slit-width` or `--slit-width-px` must be supplied. |
-| `--slit-axis` | auto | Override the auto-detected ASLM gate axis (`0` for Z, `1` for Y, or `2` for X). Applies only to `aslm` mode. |
 | `--illumination-polar-deg` | `90.0` | Polar angle, in degrees, of the illumination propagation direction, measured from the illumination's own pre-rotation +Z propagation axis. Used by both `light_sheet` and `aslm` modes. The default `90.0` (paired with the azimuthal default below) is the broadside default. |
 | `--illumination-azimuthal-deg` | `0.0` | Azimuthal angle, in degrees, of the illumination propagation direction, measured in the X-Y plane from +X. Used by both `light_sheet` and `aslm` modes. The default `0.0` (paired with the polar default above) is the broadside default. |
 
@@ -164,7 +163,7 @@ accelerated CuPy FFT Richardson-Lucy restoration, and writes a uint16 TIFF.
 makes `tiresias-deconvolve` build a theoretical seed through the same
 `generate_psf_seed()` path and the same optical and slit flags as
 `tiresias-estimate-psf` (`--psf-mode`, `--slit-width`, `--slit-width-px`,
-`--slit-axis`, `--illumination-polar-deg`, `--illumination-azimuthal-deg`, and
+`--illumination-polar-deg`, `--illumination-azimuthal-deg`, and
 the other optical arguments). When both `--psf-path` and optical flags are
 given, the loaded PSF wins.
 
@@ -349,18 +348,8 @@ including orientations with a Y component, which the old single-angle
 parameter could not express at all — uses the physical-space pipeline
 described above.
 
-The gate narrows exactly one axis of the `(z, y, x)` volume: the single
-coordinate axis the 3D propagation direction is closest to, now any of `0`
-(Z), `1` (Y), or `2` (X). Ties between two axes resolve to the lower axis
-index. The default direction `(polar_deg=90.0, azimuthal_deg=0.0)` gates axis
-2 (X); `(polar_deg=0.0, azimuthal_deg=<any>)` or
-`(polar_deg=180.0, azimuthal_deg=<any>)` gate axis 0 (Z).
-
-Pass `slit_axis` to bypass auto-detection entirely. It accepts `0`, `1`, or
-`2`; anything else raises a `ValueError` reporting
-`slit_axis must be 0, 1, or 2`. Use the override for oblique directions where
-the snapped axis is not the one you want, or to match a lab-specific axis
-convention.
+The slit window integrates along the beam propagation direction, pre-rotation
+gate axis 0 (Z), for every direction (D-02).
 
 The gate itself is a Gaussian taper, not a hard binary mask — pixels outside
 the slit are attenuated smoothly rather than zeroed. `slit_width` is the

@@ -304,33 +304,6 @@ def rotate_illumination(
     return _rotate_isotropic(illumination, rotation, dxy, dz)
 
 
-def _resolve_slit_axis(direction: np.ndarray, slit_axis: int | None = None) -> int:
-    """Resolve which pre-rotation illumination axis the slit gate narrows."""
-    # D-05: an explicit override bypasses auto-detection entirely, now
-    # accepting all three axes. Otherwise the resolver snaps the 3D
-    # propagation direction to whichever single coordinate axis it is closest
-    # to and gates along that one pre-rotation axis.
-    if slit_axis is not None:
-        if slit_axis not in (0, 1, 2):
-            raise ValueError(f"slit_axis must be 0, 1, or 2, got {slit_axis!r}")
-        return slit_axis
-    # Correction to 07-RESEARCH.md's plain-argmax recommendation (Assumption
-    # A1): a raw numpy.argmax(numpy.abs(direction)) is NOT a reliable
-    # tie-break at the legacy quadrant-tie angles (45/135/225/315 degrees).
-    # Ry(135deg)'s cos/sin components are independently rounded floats that
-    # differ from each other by ~1 ULP (e.g. abs(cos)=0.7071067811865475 vs
-    # abs(sin)=0.7071067811865476), so a bare argmax picks whichever
-    # component happened to round up -- axis 0 at some tie angles, axis 2 at
-    # others -- instead of the legacy round-half-to-even quadrant heuristic's
-    # consistent axis-0 preference at all four tie angles (pinned by the
-    # 07-01 fixture). Snap any axis within RIGHT_ANGLE_TOLERANCE of the true
-    # maximum magnitude into a tie, then let argmax's first-occurrence
-    # behavior break the tie in favor of the lowest axis index (Z).
-    magnitudes = np.abs(direction)
-    is_near_max = magnitudes >= magnitudes.max() - RIGHT_ANGLE_TOLERANCE
-    return int(np.argmax(is_near_max))
-
-
 def _resolve_slit_fwhm(
     slit_width: float | None, slit_width_px: int | None, dz: float
 ) -> float:
@@ -447,7 +420,6 @@ def generate_psf_seed(
     polar_deg: float = 90.0,
     azimuthal_deg: float = 0.0,
     slit_width: float | None = None,
-    slit_axis: int | None = None,
     slit_width_px: int | None = None,
     emitter_offset: float = 0.0,
 ) -> np.ndarray:
@@ -498,15 +470,14 @@ def generate_psf_seed(
     # D-07/T-07-02: validate before generating any PSF, extended here to the
     # non-finite-angle check -- a NaN/inf polar_deg or azimuthal_deg must fail
     # loudly rather than flow through normalise_psf's nan_to_num into an
-    # all-zero seed.
-    direction: np.ndarray | None = None
+    # all-zero seed. The direction vector itself is no longer consumed here
+    # (D-16 retired the gate-axis override resolver that used it); the call
+    # remains purely for its validation side effect.
     if psf_mode != "single":
-        direction = _spherical_direction(polar_deg, azimuthal_deg)
+        _spherical_direction(polar_deg, azimuthal_deg)
 
     slit_fwhm: float | None = None
     if psf_mode == "aslm":  # D-07: validate before generating any PSF
-        # validation only until plan 08.1-03 retires slit_axis (D-16)
-        _resolve_slit_axis(direction, slit_axis)
         slit_fwhm = _resolve_slit_fwhm(slit_width, slit_width_px, dz)
 
     detection = generate_theoretical_psf(

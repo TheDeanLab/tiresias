@@ -63,7 +63,6 @@ def _add_optical_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--slit-width", dest="slit_width", type=float, default=None)
     parser.add_argument("--slit-width-px", dest="slit_width_px", type=int, default=None)
-    parser.add_argument("--slit-axis", dest="slit_axis", type=int, default=None)
     parser.add_argument(
         "--illumination-polar-deg",
         dest="polar_deg",
@@ -174,7 +173,6 @@ def estimate_psf_main(argv: Sequence[str] | None = None) -> None:
             azimuthal_deg=args.azimuthal_deg,
             slit_width=args.slit_width,
             slit_width_px=args.slit_width_px,
-            slit_axis=args.slit_axis,
         )
     estimated = estimate_psf_from_chunks(
         image_path=args.image_path,
@@ -254,7 +252,6 @@ def deconvolve_main(argv: Sequence[str] | None = None) -> None:
             azimuthal_deg=args.azimuthal_deg,
             slit_width=args.slit_width,
             slit_width_px=args.slit_width_px,
-            slit_axis=args.slit_axis,
         )
     restored = deconvolve_with_cupy(
         image,

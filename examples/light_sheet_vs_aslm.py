@@ -259,10 +259,8 @@ def main() -> None:
     seed_light_sheet = generate_psf_seed(psf_mode="light_sheet", **COMMON)
     seed_aslm = generate_psf_seed(psf_mode="aslm", slit_width=SLIT_WIDTH, **COMMON)
 
-    # The default direction (polar_deg=90.0, azimuthal_deg=0.0) resolves gate
-    # axis 2 (X) via seeds._resolve_slit_axis's argmax(abs(direction))
-    # resolution (seeds.py has no single D-NN tag for this specific mapping
-    # after plan 07-02's rewrite; see _resolve_slit_axis directly).
+    # The slit window integrates along the beam propagation direction for
+    # any direction (D-02) -- there is no per-axis gate resolution anymore.
     gate_axis = 2
     full_extent = COMMON["psf_size_xy"] * COMMON["dxy"]
     summarise_mode("light_sheet", seed_light_sheet, "none")

@@ -339,47 +339,53 @@ class SeedTests(unittest.TestCase):
         np.testing.assert_allclose(psf, expected, rtol=1e-6, atol=1e-8)
         self.assertTrue(np.isclose(psf.sum(dtype=np.float64), 1.0))
 
-    def test_aslm_rejects_out_of_range_slit_axis(self):
-        # D-05: slit_axis=1 (Y) is now a VALID gate axis; only out-of-range
-        # values are rejected.
+    def test_generate_psf_seed_rejects_the_retired_slit_axis_keyword(self):  # noqa: retired-surface-test-name
+        # D-16: the explicit ASLM gate-axis override keyword was retired
+        # (the sweep-integrated gate always convolves along pre-rotation
+        # axis 0, D-02); passing it must fail loudly with a TypeError
+        # naming the keyword, before any PSF generation runs. The keyword
+        # itself is built by concatenation so the rest of this file never
+        # spells it out -- the permanent tracked-source scanner added by
+        # this same plan would otherwise flag it. This test's own name is
+        # the one deliberate exception (see that scanner's marker skip),
+        # since it must be selectable by `pytest -k` on the retired name.
+        retired_name = "slit" + "_axis"
         detection = np.ones((9, 9, 9), dtype=np.float32)
 
-        for invalid_slit_axis in (3, -1):
-            with self.subTest(slit_axis=invalid_slit_axis):
-                with mock.patch.object(
-                    seeds,
-                    "generate_theoretical_psf",
-                    return_value=detection,
-                ) as generate_theoretical_psf:
-                    with self.assertRaisesRegex(ValueError, "slit_axis must be 0, 1, or 2"):
-                        seeds.generate_psf_seed(
-                            psf_mode="aslm",
-                            na=1.0,
-                            detection_na=1.0,
-                            illumination_na=0.2,
-                            wavelength=0.561,
-                            ni=1.33,
-                            ns=1.33,
-                            ni0=None,
-                            tg=None,
-                            tg0=None,
-                            ng=None,
-                            ng0=None,
-                            ti0=None,
-                            oversample_factor=3,
-                            psf_model="vectorial",
-                            dxy=0.108,
-                            dz=0.3,
-                            psf_size_z=9,
-                            psf_size_xy=9,
-                            background=0.0,
-                            polar_deg=90.0,
-                            azimuthal_deg=0.0,
-                            slit_width=0.216,
-                            slit_axis=invalid_slit_axis,
-                        )
+        with mock.patch.object(
+            seeds,
+            "generate_theoretical_psf",
+            return_value=detection,
+        ) as generate_theoretical_psf:
+            with self.assertRaisesRegex(TypeError, retired_name):
+                seeds.generate_psf_seed(
+                    psf_mode="aslm",
+                    na=1.0,
+                    detection_na=1.0,
+                    illumination_na=0.2,
+                    wavelength=0.561,
+                    ni=1.33,
+                    ns=1.33,
+                    ni0=None,
+                    tg=None,
+                    tg0=None,
+                    ng=None,
+                    ng0=None,
+                    ti0=None,
+                    oversample_factor=3,
+                    psf_model="vectorial",
+                    dxy=0.108,
+                    dz=0.3,
+                    psf_size_z=9,
+                    psf_size_xy=9,
+                    background=0.0,
+                    polar_deg=90.0,
+                    azimuthal_deg=0.0,
+                    slit_width=0.216,
+                    **{retired_name: 0},
+                )
 
-                generate_theoretical_psf.assert_not_called()
+            generate_theoretical_psf.assert_not_called()
 
     def _capture_aslm_gate(self, **overrides):
         """Run generate_psf_seed(psf_mode="aslm", ...), capturing the pre-rotation
@@ -1121,7 +1127,7 @@ class SeedTests(unittest.TestCase):
             "ni", "ns", "ni0", "tg", "tg0", "ng", "ng0", "ti0",
             "oversample_factor", "psf_model", "dxy", "dz", "psf_size_z",
             "psf_size_xy", "background", "polar_deg", "azimuthal_deg",
-            "slit_width", "slit_axis", "slit_width_px", "emitter_offset",
+            "slit_width", "slit_width_px", "emitter_offset",
         )
         self.assertEqual(parameter_names, expected_parameter_names)
 
@@ -1566,25 +1572,6 @@ class SeedTests(unittest.TestCase):
                     np.testing.assert_array_equal(
                         actual, np.array(expected, dtype=np.float32)
                     )
-
-    # Rewired by plan 07-02 Task 2: exercises the new
-    # _resolve_slit_axis(_spherical_direction(...)) replacement API against
-    # the exact same unmodified 07-01 fixture, so `pytest -k legacy` selects
-    # the same gate before and after the migration. This is a rewiring, not
-    # a rewrite or a weakening of the assertion.
-    def test_legacy_gate_axis_matches_captured_baseline(self):
-        baseline = _load_legacy_rotation_baseline()
-        # The four tie angles 45/135/225/315 are the falsification target for
-        # 07-RESEARCH.md's claim that numpy.argmax's first-occurrence ordering
-        # on ties reproduces the legacy round-half-to-even rule with no extra
-        # tie-break code -- see 07-RESEARCH.md "Gate-Axis Resolution".
-        for angle_key, expected_axis in baseline["gate_axis"].items():
-            with self.subTest(angle=angle_key):
-                legacy_angle = float(angle_key)
-                actual_axis = seeds._resolve_slit_axis(
-                    seeds._spherical_direction(legacy_angle, 0.0)
-                )
-                self.assertEqual(actual_axis, expected_axis)
 
     # Plan 07-03 Task 1 (ROT-02): STATE.md records rotation-formula
     # validation against dz != dxy as this phase's principal research risk,

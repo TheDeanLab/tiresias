@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import io
 import unittest
 import warnings
 from pathlib import Path
@@ -17,12 +18,6 @@ _ASLM_INVALID_SLIT_CASES = (
     (
         ["--psf-mode", "aslm", "--slit-width", "0.4", "--slit-width-px", "4"],
         "Exactly one of slit_width or slit_width_px",
-    ),
-    (
-        # D-05: slit_axis=1 (Y) is now a VALID gate axis; only out-of-range
-        # values are rejected.
-        ["--psf-mode", "aslm", "--slit-width", "0.4", "--slit-axis", "3"],
-        "slit_axis must be 0, 1, or 2",
     ),
 )
 
@@ -234,8 +229,6 @@ class CliTests(unittest.TestCase):
                     "aslm",
                     "--slit-width-px",
                     "4",
-                    "--slit-axis",
-                    "2",
                     "--illumination-polar-deg",
                     "75.0",
                     "--illumination-azimuthal-deg",
@@ -246,7 +239,6 @@ class CliTests(unittest.TestCase):
         self.assertEqual(generate.call_args.kwargs["psf_mode"], "aslm")
         self.assertEqual(generate.call_args.kwargs["slit_width_px"], 4)
         self.assertIsNone(generate.call_args.kwargs["slit_width"])
-        self.assertEqual(generate.call_args.kwargs["slit_axis"], 2)
         self.assertEqual(generate.call_args.kwargs["polar_deg"], 75.0)
         self.assertEqual(generate.call_args.kwargs["azimuthal_deg"], 20.0)
 
@@ -286,7 +278,6 @@ class CliTests(unittest.TestCase):
         self.assertEqual(generate.call_args.kwargs["azimuthal_deg"], 0.0)
         self.assertIsNone(generate.call_args.kwargs["slit_width"])
         self.assertIsNone(generate.call_args.kwargs["slit_width_px"])
-        self.assertIsNone(generate.call_args.kwargs["slit_axis"])
 
         with (
             mock.patch.object(cli, "generate_psf_seed", return_value=seed) as generate,
@@ -547,7 +538,6 @@ class CliTests(unittest.TestCase):
             "psf_mode",
             "slit_width",
             "slit_width_px",
-            "slit_axis",
             "polar_deg",
             "azimuthal_deg",
         ):
@@ -682,8 +672,6 @@ class CliTests(unittest.TestCase):
             "aslm",
             "--slit-width-px",
             "4",
-            "--slit-axis",
-            "0",
             "--illumination-polar-deg",
             "45.0",
             "--illumination-azimuthal-deg",
@@ -737,8 +725,6 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(kwargs["slit_width_px"], 4)
                 self.assertIsInstance(kwargs["slit_width_px"], int)
                 self.assertIsNone(kwargs["slit_width"])
-                self.assertEqual(kwargs["slit_axis"], 0)
-                self.assertIsInstance(kwargs["slit_axis"], int)
                 self.assertEqual(kwargs["polar_deg"], 45.0)
                 self.assertIsInstance(kwargs["polar_deg"], float)
                 self.assertEqual(kwargs["azimuthal_deg"], 0.0)
@@ -760,7 +746,29 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(args.azimuthal_deg, 0.0)
                 self.assertIsNone(args.slit_width)
                 self.assertIsNone(args.slit_width_px)
-                self.assertIsNone(args.slit_axis)
+
+    def test_both_cli_parsers_rejects_the_retired_slit_axis_flag(self):  # noqa: retired-surface-test-name
+        # D-16: the CLI flag for the retired ASLM gate-axis override keyword
+        # (see test_seeds.py's matching rejection test) must be rejected by
+        # argparse at the parse boundary, and a minimal parse must not
+        # expose the retired attribute. Both are built by concatenation so
+        # this file never spells out either literal outside this test's own
+        # required name (see that scanner's marker skip).
+        from tiresias import cli
+
+        retired_flag = "--slit" + "-axis"
+        retired_attr = "slit" + "_axis"
+        minimal_argv = ["--image-path", "volume.tif", "--output-path", "out.tif"]
+
+        for build_parser in (cli.build_estimate_psf_parser, cli.build_deconvolve_parser):
+            with self.subTest(parser=build_parser.__name__):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as cm:
+                        build_parser().parse_args(minimal_argv + [retired_flag, "0"])
+                    self.assertEqual(cm.exception.code, 2)
+
+                namespace = build_parser().parse_args(minimal_argv)
+                self.assertFalse(hasattr(namespace, retired_attr))
 
 
 if __name__ == "__main__":
