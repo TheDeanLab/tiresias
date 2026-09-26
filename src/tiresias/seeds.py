@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import psfmodels as pm
 from scipy.ndimage import affine_transform, zoom
+from scipy.signal import fftconvolve
 from tifffile import imread
 
 RIGHT_ANGLE_TOLERANCE = 1e-6
@@ -314,7 +315,7 @@ def _resolve_slit_axis(direction: np.ndarray, slit_axis: int | None = None) -> i
 
 
 def _resolve_slit_fwhm(
-    slit_width: float | None, slit_width_px: int | None, dxy: float
+    slit_width: float | None, slit_width_px: int | None, dz: float
 ) -> float:
     """Resolve the ASLM slit gate's FWHM in physical units from whichever form was supplied."""
     provided = [value for value in (slit_width, slit_width_px) if value is not None]
@@ -328,18 +329,24 @@ def _resolve_slit_fwhm(
         return slit_width
     if slit_width_px <= 0:
         raise ValueError(f"slit_width_px must be > 0, got {slit_width_px!r}")
-    # D-09: this conversion always uses dxy, even when the resolved gate axis is
-    # 0 (Z, spaced by dz) — deliberate per locked decision D-09, not an
-    # oversight. test_aslm_slit_width_px_converts_via_dxy_even_on_the_z_axis
-    # (plan 01-04) pins this so it goes red if someone "fixes" it later.
-    return slit_width_px * dxy
+    # D-17: this conversion uses dz, the sample spacing of the integration
+    # axis (pre-rotation axis 0) -- overrides Phase 1 D-09, which used dxy
+    # unconditionally regardless of which axis the gate acted on.
+    # test_aslm_slit_width_px_converts_via_dz (plan 08.1-01) pins this.
+    return slit_width_px * dz
 
 
 def _gaussian_slit_window(size: int, fwhm: float, pixel_size: float) -> np.ndarray | None:
     """Build a geometric-midpoint-centered Gaussian taper, or None to skip the gate."""
-    full_extent = size * pixel_size
-    if fwhm >= full_extent:
-        return None  # D-06: skip the gate entirely for exact light_sheet reduction
+    # D-18: below one pixel_size sample, the window would resolve to a
+    # spike narrower than the simulated grid can represent -- fall back to
+    # no convolution instead (the waist-limited limit, identical to
+    # light_sheet). D-15: no full-extent shortcut -- a very wide slit still
+    # builds a real (near-uniform) window here and converges to the
+    # swept-average sheet through the convolution itself, rather than
+    # returning None early for an exact light_sheet reduction.
+    if fwhm < pixel_size:
+        return None
     sigma_px = (fwhm / pixel_size) / (2.0 * math.sqrt(2.0 * math.log(2.0)))
     center = (size - 1) / 2.0  # D-05: geometric midpoint, matches psfmodels' centered beam waist
     idx = np.arange(size, dtype=np.float64)
@@ -348,34 +355,52 @@ def _gaussian_slit_window(size: int, fwhm: float, pixel_size: float) -> np.ndarr
 
 
 def _apply_aslm_slit_gate(
-    illumination: np.ndarray, axis: int, fwhm: float, dxy: float, dz: float
+    illumination: np.ndarray, fwhm: float, dz: float
 ) -> np.ndarray:
-    """Multiply the pre-rotation illumination by a Gaussian slit gate along one axis."""
-    pixel_size = dz if axis == 0 else dxy
-    size = illumination.shape[axis]
-    window = _gaussian_slit_window(size, fwhm, pixel_size)
-    if window is None:
-        gated = illumination
-    else:
-        shape = [1, 1, 1]
-        shape[axis] = size
-        gated = illumination * window.reshape(shape)
+    """Convolve the pre-rotation illumination with a sweep-integrated slit window.
 
-    # D-08: normalise_psf (seeds.py:16-22) returns a zero-sum array
-    # unchanged and without error, so without this guard a user-chosen
-    # slit_width narrow enough to destroy the illumination energy could
-    # produce an all-zero PSF seed that flows into blind-RL estimation
-    # looking like a valid one. Compare against the ungated illumination's
-    # own sum (a relative statement), not a fixed constant.
-    original_sum = float(illumination.sum())
+    D-01/D-02: the rolling shutter is assumed perfectly synchronized to the
+    swept beam waist, so the effective illumination at any point along the
+    beam's propagation axis (pre-rotation axis 0) is the raw illumination
+    convolved with the Gaussian slit window -- not a static per-axis
+    multiply. This runs before rotation, so it stays correct for any
+    (polar_deg, azimuthal_deg) direction with no axis snapping.
+    """
+    n = illumination.shape[0]
+    # The odd 2n-1 kernel length puts the centre tap exactly at index n - 1
+    # for both odd and even n, so a same-mode convolution introduces no
+    # shift, and the waist-offset integral spans the whole simulated window
+    # (D-07).
+    window = _gaussian_slit_window(2 * n - 1, fwhm, dz)
+    if window is None:
+        gated = illumination  # D-18: below one dz sample, the waist-limited limit
+    else:
+        # Beam energy beyond the simulated window is treated as zero
+        # (same-mode convolution, zero-padded edges); the clip removes tiny
+        # negative values introduced by FFT round-off.
+        gated = np.clip(
+            fftconvolve(illumination, window.reshape(-1, 1, 1), mode="same", axes=0),
+            0.0,
+            None,
+        ).astype(np.float32)
+
+    # D-18: normalise_psf (seeds.py:16-22) returns a zero-sum array
+    # unchanged and without error, so without this guard a degenerate
+    # illumination input or a user-chosen slit_width could produce an
+    # all-zero PSF seed that flows into blind-RL estimation looking like a
+    # valid one. This guard covers the no-convolution fallback path too.
+    # Compare against the ungated illumination's own sum (a relative
+    # statement), not a fixed constant.
+    original_sum = float(np.abs(illumination).sum(dtype=np.float64))
     epsilon = max(float(np.finfo(np.float32).eps), original_sum * 1e-7)
-    if float(gated.sum()) < epsilon:
+    gated_sum = float(gated.sum(dtype=np.float64))
+    if not np.isfinite(gated).all() or gated_sum <= epsilon:
         raise ValueError(
-            f"slit_width={fwhm!r} is too narrow to capture positive illumination "
-            f"energy along axis {axis} (extent={size * pixel_size!r}); the ASLM "
-            "slit is a static gate centered on the gate axis midpoint, assumed "
-            "perfectly synchronized to the beam waist, so widen slit_width "
-            "rather than adjusting timing"
+            f"ASLM slit-integrated illumination has no positive finite energy "
+            f"(slit_width={fwhm!r}, dz={dz!r}); the sweep-integrated model "
+            "assumes the rolling shutter is perfectly synchronized to the "
+            "swept beam waist, so check the illumination parameters and "
+            "slit_width rather than timing"
         )
     return gated
 
@@ -410,14 +435,20 @@ def generate_psf_seed(
 ) -> np.ndarray:
     """Create a single-detection, light-sheet, or ASLM blind-estimation seed PSF.
 
-    ASLM mode multiplies the illumination PSF, in its pre-rotation frame, by a
-    static Gaussian slit gate centered on the geometric midpoint of the gate
-    axis. The gate is a fixed spatial taper, not a time-resolved simulation:
-    the rolling shutter is assumed to be perfectly synchronized with the
-    swept beam waist, so the illuminated slit always sits exactly at the
-    waist. Timing jitter, shutter/beam desynchronization, and sweep-velocity
-    error are therefore not modelled and are explicitly out of scope for
-    this milestone.
+    ASLM mode convolves the illumination PSF, in its pre-rotation frame, with
+    a Gaussian slit window (FWHM ``slit_width``) along the beam's
+    propagation axis (pre-rotation axis 0), before rotation. This is the
+    sweep-integrated effective illumination seen by a rolling shutter
+    assumed to be perfectly synchronized with the swept beam waist: the
+    illuminated slit always sits exactly at the waist as it sweeps across
+    the whole simulated window.
+
+    A slit narrower than one dz sample applies no convolution -- the
+    waist-limited limit, identical to ``light_sheet``. A very wide slit
+    converges to the swept-average sheet rather than returning an exact
+    ``light_sheet`` seed. Timing jitter, shutter/beam desynchronization, and
+    sweep-velocity error are not modelled and are explicitly out of scope
+    for this milestone.
     """
     if psf_mode not in ("single", "light_sheet", "aslm"):
         raise ValueError(
@@ -432,11 +463,11 @@ def generate_psf_seed(
     if psf_mode != "single":
         direction = _spherical_direction(polar_deg, azimuthal_deg)
 
-    gate_axis: int | None = None
     slit_fwhm: float | None = None
     if psf_mode == "aslm":  # D-07: validate before generating any PSF
-        gate_axis = _resolve_slit_axis(direction, slit_axis)
-        slit_fwhm = _resolve_slit_fwhm(slit_width, slit_width_px, dxy)
+        # validation only until plan 08.1-03 retires slit_axis (D-16)
+        _resolve_slit_axis(direction, slit_axis)
+        slit_fwhm = _resolve_slit_fwhm(slit_width, slit_width_px, dz)
 
     detection = generate_theoretical_psf(
         na=na,
@@ -485,7 +516,7 @@ def generate_psf_seed(
         background=background,
     )
     if psf_mode == "aslm":
-        illumination = _apply_aslm_slit_gate(illumination, gate_axis, slit_fwhm, dxy, dz)
+        illumination = _apply_aslm_slit_gate(illumination, slit_fwhm, dz)
     rotated = rotate_illumination(
         illumination, polar_deg=polar_deg, azimuthal_deg=azimuthal_deg, dxy=dxy, dz=dz
     )

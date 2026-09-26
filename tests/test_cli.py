@@ -24,13 +24,6 @@ _ASLM_INVALID_SLIT_CASES = (
         ["--psf-mode", "aslm", "--slit-width", "0.4", "--slit-axis", "3"],
         "slit_axis must be 0, 1, or 2",
     ),
-    (
-        # Even --psf-size-xy is required: _gaussian_slit_window centres the Gaussian
-        # at (size - 1) / 2, which only lands off-sample for an even size. See this
-        # plan's interface_context for the measured odd-vs-even behavior.
-        ["--psf-mode", "aslm", "--psf-size-xy", "16", "--slit-width", "0.0001"],
-        "too narrow to capture positive illumination energy",
-    ),
 )
 
 

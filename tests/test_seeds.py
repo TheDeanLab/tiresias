@@ -8,8 +8,36 @@ from pathlib import Path
 from unittest import mock
 
 import numpy as np
+from scipy.signal import fftconvolve
 
 from tiresias import seeds
+
+
+def _half_max_width(profile, spacing):
+    """Linear-interpolation half-max crossing width, walking outward from the peak.
+
+    Test-local helper (plan 08.1-01, D-14) -- mirrors the linear-interpolation
+    half-max crossing convention already used by simulate/beam_profile.py,
+    but is not itself production code.
+    """
+    profile = np.asarray(profile, dtype=np.float64)
+    peak_idx = int(np.argmax(profile))
+    half = profile[peak_idx] / 2.0
+
+    def _walk(step):
+        idx = peak_idx
+        while 0 <= idx + step < len(profile):
+            prev = idx
+            idx += step
+            if profile[idx] <= half:
+                span = profile[prev] - profile[idx]
+                frac = 0.0 if span == 0 else (profile[prev] - half) / span
+                return prev + frac * step
+        raise ValueError("half-max crossing not found within profile bounds")
+
+    left_idx = _walk(-1)
+    right_idx = _walk(1)
+    return (right_idx - left_idx) * spacing
 
 
 def _load_legacy_rotation_baseline():
@@ -230,49 +258,6 @@ class SeedTests(unittest.TestCase):
         right_angle_reference = seeds.normalise_psf(detection * right_angle_rotated)
         self.assertFalse(np.allclose(psf, right_angle_reference))
 
-    def test_aslm_seed_real_numeric_end_to_end(self):
-        common_kwargs = dict(
-            na=1.0,
-            detection_na=1.0,
-            illumination_na=0.2,
-            wavelength=0.561,
-            ni=1.33,
-            ns=1.33,
-            ni0=None,
-            tg=None,
-            tg0=None,
-            ng=None,
-            ng0=None,
-            ti0=None,
-            oversample_factor=1,
-            psf_model="vectorial",
-            dxy=0.108,
-            dz=0.3,
-            psf_size_z=15,
-            psf_size_xy=15,
-            background=0.0,
-            polar_deg=90.0,
-            azimuthal_deg=0.0,
-        )
-
-        light_sheet = seeds.generate_psf_seed(psf_mode="light_sheet", **common_kwargs)
-        aslm = seeds.generate_psf_seed(
-            psf_mode="aslm", slit_width=0.4, **common_kwargs
-        )
-
-        self.assertEqual(aslm.shape, (15, 15, 15))
-        self.assertEqual(aslm.dtype, np.float32)
-        self.assertLess(abs(float(aslm.sum(dtype=np.float64)) - 1.0), 1e-5)
-        self.assertFalse(np.allclose(aslm, light_sheet))
-
-        def axis0_variance(psf):
-            marginal = psf.sum(axis=(1, 2), dtype=np.float64)
-            idx = np.arange(marginal.shape[0], dtype=np.float64)
-            centroid = float((marginal * idx).sum() / marginal.sum())
-            return float((marginal * (idx - centroid) ** 2).sum() / marginal.sum())
-
-        self.assertLess(axis0_variance(aslm), axis0_variance(light_sheet))
-
     def test_psfmodels_centers_beam_waist_at_geometric_midpoint(self):
         illumination = seeds.generate_theoretical_psf(
             na=0.2,
@@ -300,7 +285,7 @@ class SeedTests(unittest.TestCase):
         self.assertLess(abs(centroid(axis0_marginal) - 7.0), 0.5)
         self.assertLess(abs(centroid(axis2_marginal) - 7.0), 0.5)
 
-    def test_aslm_seed_multiplies_detection_by_gated_illumination(self):
+    def test_aslm_seed_multiplies_detection_by_sweep_integrated_illumination(self):
         detection = np.ones((5, 5, 5), dtype=np.float32)
         illumination = np.ones((5, 5, 5), dtype=np.float32)
 
@@ -332,13 +317,17 @@ class SeedTests(unittest.TestCase):
                 background=0.0,
                 polar_deg=90.0,
                 azimuthal_deg=0.0,
-                slit_width=0.216,
+                slit_width=0.6,
             )
 
-        sigma = (0.216 / 0.108) / (2.0 * np.sqrt(2.0 * np.log(2.0)))
-        idx = np.arange(5, dtype=np.float64)
-        window = np.exp(-0.5 * ((idx - 2.0) / sigma) ** 2).astype(np.float32)
-        gated = illumination * window.reshape(1, 1, 5)
+        sigma = (0.6 / 0.3) / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+        k = np.arange(9, dtype=np.float64)
+        taps = np.exp(-0.5 * ((k - 4.0) / sigma) ** 2).astype(np.float32)
+        gated = np.clip(
+            fftconvolve(illumination, taps.reshape(-1, 1, 1), mode="same", axes=0),
+            0.0,
+            None,
+        ).astype(np.float32)
         expected = seeds.normalise_psf(
             detection
             * seeds.rotate_illumination(
@@ -349,53 +338,6 @@ class SeedTests(unittest.TestCase):
         self.assertEqual(psf.shape, (5, 5, 5))
         np.testing.assert_allclose(psf, expected, rtol=1e-6, atol=1e-8)
         self.assertTrue(np.isclose(psf.sum(dtype=np.float64), 1.0))
-
-    def test_aslm_slit_axis_override_forces_axis(self):
-        detection = np.ones((9, 9, 9), dtype=np.float32)
-        illumination = np.ones((9, 9, 9), dtype=np.float32)
-        captured = {}
-
-        def _record(illumination_arg, *, polar_deg, azimuthal_deg, dxy, dz):
-            captured["gated"] = np.array(illumination_arg, copy=True)
-            return illumination_arg
-
-        with mock.patch.object(
-            seeds,
-            "generate_theoretical_psf",
-            side_effect=[detection, illumination],
-        ), mock.patch.object(seeds, "rotate_illumination", side_effect=_record):
-            seeds.generate_psf_seed(
-                psf_mode="aslm",
-                na=1.0,
-                detection_na=1.0,
-                illumination_na=0.2,
-                wavelength=0.561,
-                ni=1.33,
-                ns=1.33,
-                ni0=None,
-                tg=None,
-                tg0=None,
-                ng=None,
-                ng0=None,
-                ti0=None,
-                oversample_factor=3,
-                psf_model="vectorial",
-                dxy=0.108,
-                dz=0.3,
-                psf_size_z=9,
-                psf_size_xy=9,
-                background=0.0,
-                polar_deg=90.0,
-                azimuthal_deg=0.0,
-                slit_width=0.216,
-                slit_axis=0,
-            )
-
-        axis0_profile = captured["gated"].sum(axis=(1, 2))
-        axis2_profile = captured["gated"].sum(axis=(0, 1))
-        self.assertEqual(int(np.argmax(axis0_profile)), 4)
-        self.assertLess(axis0_profile[0], axis0_profile[4])
-        self.assertTrue(np.allclose(axis2_profile, axis2_profile[0]))
 
     def test_aslm_rejects_out_of_range_slit_axis(self):
         # D-05: slit_axis=1 (Y) is now a VALID gate axis; only out-of-range
@@ -474,7 +416,10 @@ class SeedTests(unittest.TestCase):
             psf_size_z=9,
             psf_size_xy=9,
             background=0.0,
-            slit_width=0.216,
+            # D-18: 0.9 is 3 samples at dz=0.3, well above the one-dz-sample
+            # floor, so this default always exercises the convolution branch
+            # (0.216 now falls below one dz sample and would skip it).
+            slit_width=0.9,
         )
         kwargs.update(overrides)
 
@@ -487,19 +432,22 @@ class SeedTests(unittest.TestCase):
 
         return captured
 
-    def test_aslm_gate_axis_selection_by_direction(self):
-        # Table computed from int(np.argmax(np.abs(direction))); see
-        # 07-RESEARCH.md "Gate-Axis Resolution" and the fixture-backed legacy
-        # baseline tests below for the empirical falsification of this table.
-        cases = [
-            (0.0, 0.0, 0),
-            (45.0, 0.0, 0),
-            (90.0, 0.0, 2),
-            (135.0, 0.0, 0),
-            (180.0, 0.0, 0),
-            (90.0, 180.0, 2),
+    def test_aslm_convolves_pre_rotation_axis_0_for_every_direction(self):
+        # D-02: the convolution runs on pre-rotation axis 0 before rotation,
+        # for every direction including oblique/out-of-plane ones -- no
+        # camera-axis snapping decides the integration axis.
+        directions = [
+            (0.0, 0.0),
+            (45.0, 0.0),
+            (90.0, 0.0),
+            (135.0, 0.0),
+            (180.0, 0.0),
+            (90.0, 180.0),
+            (90.0, 90.0),
+            (90.0, 45.0),
+            (70.0, 40.0),
         ]
-        for polar_deg, azimuthal_deg, expected_axis in cases:
+        for polar_deg, azimuthal_deg in directions:
             with self.subTest(polar_deg=polar_deg, azimuthal_deg=azimuthal_deg):
                 captured = self._capture_aslm_gate(
                     polar_deg=polar_deg, azimuthal_deg=azimuthal_deg
@@ -509,17 +457,10 @@ class SeedTests(unittest.TestCase):
                 axis1_profile = gated.sum(axis=(0, 2))
                 axis2_profile = gated.sum(axis=(0, 1))
 
-                # Axis 1 (Y) is not exercised by any of these six cases.
+                self.assertEqual(int(np.argmax(axis0_profile)), 4)
+                self.assertLess(axis0_profile[0], axis0_profile[4])
                 self.assertTrue(np.allclose(axis1_profile, axis1_profile[0]))
-
-                if expected_axis == 0:
-                    narrowed_profile, flat_profile = axis0_profile, axis2_profile
-                else:
-                    narrowed_profile, flat_profile = axis2_profile, axis0_profile
-
-                self.assertEqual(int(np.argmax(narrowed_profile)), 4)
-                self.assertLess(narrowed_profile[0], narrowed_profile[4])
-                self.assertTrue(np.allclose(flat_profile, flat_profile[0]))
+                self.assertTrue(np.allclose(axis2_profile, axis2_profile[0]))
 
     def test_aslm_rotation_receives_true_direction_not_snapped_gate_axis(self):
         captured = self._capture_aslm_gate(polar_deg=45.0, azimuthal_deg=0.0)
@@ -528,10 +469,9 @@ class SeedTests(unittest.TestCase):
         self.assertEqual(int(np.argmax(axis0_profile)), 4)
         self.assertLess(axis0_profile[0], axis0_profile[4])
 
-        # D-05: rotate_illumination receives the TRUE direction, not the
-        # snapped gate axis (which resolved to axis 0 here, matching the
-        # nearest-axis snap of (45, 0), while the rotation direction stays
-        # (polar_deg=45.0, azimuthal_deg=0.0)).
+        # D-02: the convolution is always axis 0 in the pre-rotation frame --
+        # there is no gate-axis snapping anymore. rotate_illumination
+        # receives the TRUE direction (polar_deg=45.0, azimuthal_deg=0.0).
         self.assertEqual(captured["polar_deg"], 45.0)
         self.assertEqual(captured["azimuthal_deg"], 0.0)
 
@@ -588,7 +528,9 @@ class SeedTests(unittest.TestCase):
 
                     generate_theoretical_psf.assert_not_called()
 
-    def test_aslm_slit_width_px_matches_physical_equivalent(self):
+    def test_aslm_slit_width_px_converts_via_dz(self):
+        # D-17: slit_width_px converts via dz, the sample spacing of the
+        # pre-rotation integration axis -- not dxy (Phase 1 D-09, retired).
         common_kwargs = dict(
             psf_mode="aslm",
             na=1.0,
@@ -623,76 +565,6 @@ class SeedTests(unittest.TestCase):
             ],
         ):
             psf_px = seeds.generate_psf_seed(slit_width_px=2, **common_kwargs)
-
-        with mock.patch.object(
-            seeds,
-            "generate_theoretical_psf",
-            side_effect=[
-                np.ones((9, 9, 9), dtype=np.float32),
-                np.ones((9, 9, 9), dtype=np.float32),
-            ],
-        ):
-            psf_physical = seeds.generate_psf_seed(
-                slit_width=2 * common_kwargs["dxy"], **common_kwargs
-            )
-
-        # Doubling is exact in binary floating point, so slit_width_px=2 at
-        # dxy=0.108 must gate the same pixels exactly as slit_width=2*0.108 —
-        # ASLM-03's actual claim, checked without a tolerance.
-        np.testing.assert_array_equal(psf_px, psf_physical)
-
-    def test_aslm_slit_width_px_converts_via_dxy_even_on_the_z_axis(self):
-        # D-09's conversion pin: slit_width_px * dxy is unconditional, even
-        # though the gate axis is forced to axis 0 here (Z, spaced by dz, not
-        # dxy). This test goes red if the conversion is ever "fixed" to be
-        # axis-aware without revisiting the locked decision.
-        common_kwargs = dict(
-            psf_mode="aslm",
-            na=1.0,
-            detection_na=1.0,
-            illumination_na=0.2,
-            wavelength=0.561,
-            ni=1.33,
-            ns=1.33,
-            ni0=None,
-            tg=None,
-            tg0=None,
-            ng=None,
-            ng0=None,
-            ti0=None,
-            oversample_factor=3,
-            psf_model="vectorial",
-            dxy=0.108,
-            dz=0.3,
-            psf_size_z=9,
-            psf_size_xy=9,
-            background=0.0,
-            polar_deg=90.0,
-            azimuthal_deg=0.0,
-            slit_axis=0,
-        )
-
-        with mock.patch.object(
-            seeds,
-            "generate_theoretical_psf",
-            side_effect=[
-                np.ones((9, 9, 9), dtype=np.float32),
-                np.ones((9, 9, 9), dtype=np.float32),
-            ],
-        ):
-            psf_px = seeds.generate_psf_seed(slit_width_px=2, **common_kwargs)
-
-        with mock.patch.object(
-            seeds,
-            "generate_theoretical_psf",
-            side_effect=[
-                np.ones((9, 9, 9), dtype=np.float32),
-                np.ones((9, 9, 9), dtype=np.float32),
-            ],
-        ):
-            psf_dxy_equivalent = seeds.generate_psf_seed(
-                slit_width=2 * common_kwargs["dxy"], **common_kwargs
-            )
 
         with mock.patch.object(
             seeds,
@@ -706,32 +578,34 @@ class SeedTests(unittest.TestCase):
                 slit_width=2 * common_kwargs["dz"], **common_kwargs
             )
 
-        # Proves the conversion used dxy...
-        np.testing.assert_array_equal(psf_px, psf_dxy_equivalent)
-        # ...and NOT dz — this assertion is what turns red if someone "fixes"
-        # the conversion to be axis-aware.
-        self.assertFalse(np.allclose(psf_px, psf_dz_equivalent))
+        with mock.patch.object(
+            seeds,
+            "generate_theoretical_psf",
+            side_effect=[
+                np.ones((9, 9, 9), dtype=np.float32),
+                np.ones((9, 9, 9), dtype=np.float32),
+            ],
+        ):
+            # 2*dxy = 0.216 < dz = 0.3, one dz sample -- this falls under the
+            # D-18 waist-limited fallback (no convolution), a completely
+            # different result from the real convolution at 2*dz.
+            psf_dxy_equivalent = seeds.generate_psf_seed(
+                slit_width=2 * common_kwargs["dxy"], **common_kwargs
+            )
 
-    def test_aslm_too_narrow_slit_width_raises(self):
-        # All energy sits at gate-axis (axis 2, since polar_deg=90.0,
-        # azimuthal_deg=0.0) index 0, distance 4 from the size-9 axis's
-        # centre index 4.
-        illumination = np.zeros((9, 9, 9), dtype=np.float32)
-        illumination[:, :, 0] = 1.0
+        # Doubling is exact in binary floating point, so slit_width_px=2 at
+        # dz=0.3 must gate identically to slit_width=2*0.3, checked without a
+        # tolerance.
+        np.testing.assert_array_equal(psf_px, psf_dz_equivalent)
+        # ...and NOT dxy — this assertion is what turns red if someone
+        # "fixes" the conversion back to Phase 1 D-09's dxy-always rule.
+        self.assertFalse(np.allclose(psf_px, psf_dxy_equivalent))
 
-        dxy = 0.108
-        distance_px = 4.0
-
-        # Positive-but-negligible slit_width, inverted from a target surviving
-        # fraction rather than a magic constant: at slit_width below, the
-        # Gaussian window value at distance_px equals target_fraction exactly.
-        target_fraction = 1e-9  # well under the 1e-7 relative epsilon
-        sigma_px = distance_px / math.sqrt(-2.0 * math.log(target_fraction))
-        fwhm_px = sigma_px * 2.0 * math.sqrt(2.0 * math.log(2.0))
-        negligible_slit_width = fwhm_px * dxy
-
+    def test_aslm_sub_sample_slit_falls_back_to_the_waist_limited_seed(self):
+        # D-18: below one dz sample, no convolution runs -- the seed is
+        # bit-identical to light_sheet (the waist-limited limit).
+        dz = 0.3
         base_kwargs = dict(
-            psf_mode="aslm",
             na=1.0,
             detection_na=1.0,
             illumination_na=0.2,
@@ -746,7 +620,276 @@ class SeedTests(unittest.TestCase):
             ti0=None,
             oversample_factor=3,
             psf_model="vectorial",
-            dxy=dxy,
+            dxy=0.108,
+            dz=dz,
+            psf_size_z=9,
+            psf_size_xy=9,
+            background=0.0,
+            polar_deg=90.0,
+            azimuthal_deg=0.0,
+        )
+
+        def _fresh_arms():
+            detection = np.ones((9, 9, 9), dtype=np.float32)
+            illumination = (
+                np.random.default_rng(0).random((9, 9, 9), dtype=np.float32) + 0.1
+            )
+            return [detection, illumination.copy()]
+
+        with mock.patch.object(
+            seeds, "generate_theoretical_psf", side_effect=_fresh_arms()
+        ):
+            light_sheet = seeds.generate_psf_seed(psf_mode="light_sheet", **base_kwargs)
+
+        with mock.patch.object(
+            seeds, "generate_theoretical_psf", side_effect=_fresh_arms()
+        ):
+            below_sample = seeds.generate_psf_seed(
+                psf_mode="aslm", slit_width=0.999 * dz, **base_kwargs
+            )
+
+        with mock.patch.object(
+            seeds, "generate_theoretical_psf", side_effect=_fresh_arms()
+        ):
+            at_sample = seeds.generate_psf_seed(
+                psf_mode="aslm", slit_width=dz, **base_kwargs
+            )
+
+        np.testing.assert_array_equal(below_sample, light_sheet)
+        self.assertFalse(np.array_equal(at_sample, light_sheet))
+
+    def test_aslm_rejects_illumination_with_no_positive_finite_energy(self):
+        # D-18 guard: the helper raises directly on zero and NaN illumination...
+        with self.assertRaisesRegex(ValueError, "slit_width"):
+            seeds._apply_aslm_slit_gate(
+                np.zeros((9, 9, 9), dtype=np.float32), 0.9, 0.3
+            )
+
+        nan_illumination = np.ones((9, 9, 9), dtype=np.float32)
+        nan_illumination[0, 0, 0] = np.nan
+        with self.assertRaisesRegex(ValueError, "slit_width"):
+            seeds._apply_aslm_slit_gate(nan_illumination, 0.9, 0.3)
+
+        # ...and generate_psf_seed raises through the same guard when the
+        # mocked illumination arm is all zero.
+        detection = np.ones((9, 9, 9), dtype=np.float32)
+        illumination = np.zeros((9, 9, 9), dtype=np.float32)
+        with mock.patch.object(
+            seeds,
+            "generate_theoretical_psf",
+            side_effect=[detection, illumination],
+        ):
+            with self.assertRaisesRegex(ValueError, "slit_width"):
+                seeds.generate_psf_seed(
+                    psf_mode="aslm",
+                    na=1.0,
+                    detection_na=1.0,
+                    illumination_na=0.2,
+                    wavelength=0.561,
+                    ni=1.33,
+                    ns=1.33,
+                    ni0=None,
+                    tg=None,
+                    tg0=None,
+                    ng=None,
+                    ng0=None,
+                    ti0=None,
+                    oversample_factor=3,
+                    psf_model="vectorial",
+                    dxy=0.108,
+                    dz=0.3,
+                    psf_size_z=9,
+                    psf_size_xy=9,
+                    background=0.0,
+                    polar_deg=90.0,
+                    azimuthal_deg=0.0,
+                    slit_width=0.9,
+                )
+
+    def test_aslm_wide_slit_converges_to_the_swept_average_sheet(self):
+        # D-15: a very wide slit no longer takes the old full-extent
+        # shortcut back to exact light_sheet -- it follows the physics and
+        # converges to the swept-average sheet (uniform window over the
+        # whole simulated window).
+        common_kwargs = dict(
+            na=1.0,
+            detection_na=1.0,
+            illumination_na=0.4,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=1.33,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=1,
+            psf_model="vectorial",
+            dxy=0.1,
+            dz=0.1,
+            psf_size_z=15,
+            psf_size_xy=15,
+            background=0.0,
+            polar_deg=90.0,
+            azimuthal_deg=0.0,
+        )
+        arm_kwargs = {
+            key: value
+            for key, value in common_kwargs.items()
+            if key not in ("detection_na", "illumination_na", "polar_deg", "azimuthal_deg")
+        }
+
+        light_sheet = seeds.generate_psf_seed(psf_mode="light_sheet", **common_kwargs)
+
+        detection_arm = seeds.generate_theoretical_psf(
+            detection_na=common_kwargs["detection_na"],
+            illumination_na=common_kwargs["illumination_na"],
+            **arm_kwargs,
+        )
+        illumination_arm = seeds.generate_theoretical_psf(
+            detection_na=common_kwargs["illumination_na"],
+            illumination_na=common_kwargs["illumination_na"],
+            **arm_kwargs,
+        )
+
+        n = common_kwargs["psf_size_z"]
+        uniform_window = np.ones(2 * n - 1, dtype=np.float32)
+        swept_average_gated = np.clip(
+            fftconvolve(
+                illumination_arm,
+                uniform_window.reshape(-1, 1, 1),
+                mode="same",
+                axes=0,
+            ),
+            0.0,
+            None,
+        ).astype(np.float32)
+        swept_average_rotated = seeds.rotate_illumination(
+            swept_average_gated,
+            polar_deg=common_kwargs["polar_deg"],
+            azimuthal_deg=common_kwargs["azimuthal_deg"],
+            dxy=common_kwargs["dxy"],
+            dz=common_kwargs["dz"],
+        )
+        reference = seeds.normalise_psf(detection_arm * swept_average_rotated)
+
+        wide_seed = seeds.generate_psf_seed(
+            psf_mode="aslm", slit_width=1e6, **common_kwargs
+        )
+        np.testing.assert_allclose(wide_seed, reference, rtol=1e-4, atol=1e-9)
+        self.assertFalse(np.allclose(wide_seed, light_sheet))
+
+        length = common_kwargs["psf_size_z"] * common_kwargs["dz"]
+        widths = [0.5 * length, length, 2 * length, 8 * length]
+        distances = []
+        for slit_width in widths:
+            seed = seeds.generate_psf_seed(
+                psf_mode="aslm", slit_width=slit_width, **common_kwargs
+            )
+            distances.append(
+                float(
+                    np.linalg.norm(
+                        (seed.astype(np.float64) - reference.astype(np.float64)).ravel()
+                    )
+                )
+            )
+
+        for earlier, later in zip(distances, distances[1:]):
+            self.assertLessEqual(later, earlier + 1e-12)
+
+    def test_light_sheet_and_single_match_independent_recomposition(self):
+        common_kwargs = dict(
+            na=1.0,
+            detection_na=1.0,
+            illumination_na=0.4,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=1,
+            psf_model="vectorial",
+            dxy=0.108,
+            dz=0.3,
+            psf_size_z=15,
+            psf_size_xy=15,
+            background=0.0,
+        )
+        arm_kwargs = {
+            key: value
+            for key, value in common_kwargs.items()
+            if key not in ("detection_na", "illumination_na")
+        }
+
+        directions = [(90.0, 0.0), (70.0, 40.0)]
+        for polar_deg, azimuthal_deg in directions:
+            with self.subTest(polar_deg=polar_deg, azimuthal_deg=azimuthal_deg):
+                light_sheet = seeds.generate_psf_seed(
+                    psf_mode="light_sheet",
+                    polar_deg=polar_deg,
+                    azimuthal_deg=azimuthal_deg,
+                    **common_kwargs,
+                )
+                single = seeds.generate_psf_seed(
+                    psf_mode="single",
+                    polar_deg=polar_deg,
+                    azimuthal_deg=azimuthal_deg,
+                    **common_kwargs,
+                )
+
+                detection_arm = seeds.generate_theoretical_psf(
+                    detection_na=common_kwargs["detection_na"],
+                    illumination_na=common_kwargs["illumination_na"],
+                    **arm_kwargs,
+                )
+                illumination_arm = seeds.generate_theoretical_psf(
+                    detection_na=common_kwargs["illumination_na"],
+                    illumination_na=common_kwargs["illumination_na"],
+                    **arm_kwargs,
+                )
+                rotated = seeds.rotate_illumination(
+                    illumination_arm,
+                    polar_deg=polar_deg,
+                    azimuthal_deg=azimuthal_deg,
+                    dxy=common_kwargs["dxy"],
+                    dz=common_kwargs["dz"],
+                )
+                expected_light_sheet = seeds.normalise_psf(detection_arm * rotated)
+                expected_single = seeds.normalise_psf(detection_arm)
+
+                np.testing.assert_array_equal(light_sheet, expected_light_sheet)
+                np.testing.assert_array_equal(single, expected_single)
+
+    def test_aslm_uses_the_same_pencil_beam_illumination_as_light_sheet(self):
+        # D-04: ASLM uses the identical 3-D pencil-beam illumination arm as
+        # light_sheet -- only the sweep-integration convolution is new.
+        recorded_calls = []
+
+        def _record(*args, **kwargs):
+            recorded_calls.append(kwargs)
+            return np.ones((9, 9, 9), dtype=np.float32)
+
+        common_kwargs = dict(
+            na=1.0,
+            detection_na=1.0,
+            illumination_na=0.2,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=3,
+            psf_model="vectorial",
+            dxy=0.108,
             dz=0.3,
             psf_size_z=9,
             psf_size_xy=9,
@@ -755,41 +898,124 @@ class SeedTests(unittest.TestCase):
             azimuthal_deg=0.0,
         )
 
-        cases = [
-            ("underflow to exact zero", 0.001),
-            ("positive but negligible", negligible_slit_width),
-        ]
+        with mock.patch.object(seeds, "generate_theoretical_psf", side_effect=_record):
+            seeds.generate_psf_seed(psf_mode="light_sheet", **common_kwargs)
+        light_sheet_illumination_call = recorded_calls[1]
+        recorded_calls.clear()
 
-        for label, slit_width in cases:
-            with self.subTest(label=label):
-                detection = np.ones((9, 9, 9), dtype=np.float32)
-                with mock.patch.object(
-                    seeds,
-                    "generate_theoretical_psf",
-                    side_effect=[detection, illumination.copy()],
-                ):
-                    with self.assertRaisesRegex(ValueError, "too narrow"):
-                        seeds.generate_psf_seed(slit_width=slit_width, **base_kwargs)
+        with mock.patch.object(seeds, "generate_theoretical_psf", side_effect=_record):
+            seeds.generate_psf_seed(psf_mode="aslm", slit_width=0.5, **common_kwargs)
+        aslm_illumination_call = recorded_calls[1]
 
-        # Companion assertion (ASLM-06): normalise_psf's silent zero-energy
-        # pass-through is exactly the behaviour the guard above must be
-        # distinct from — it returns an all-zero array unchanged, no error.
-        zero_psf = seeds.normalise_psf(np.zeros((9, 9, 9), dtype=np.float32))
-        np.testing.assert_array_equal(zero_psf, np.zeros((9, 9, 9), dtype=np.float32))
+        self.assertEqual(light_sheet_illumination_call, aslm_illumination_call)
 
-    def test_aslm_full_extent_equals_light_sheet(self):
-        dxy = 0.108
-        psf_size_xy = 5
-        full_extent = psf_size_xy * dxy
-
-        base_kwargs = dict(
+    def test_aslm_seed_matches_sweep_integrated_recomposition(self):
+        common_kwargs = dict(
             na=1.0,
             detection_na=1.0,
-            illumination_na=0.2,
+            illumination_na=0.4,
             wavelength=0.561,
             ni=1.33,
             ns=1.33,
-            ni0=None,
+            ni0=1.33,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=1,
+            psf_model="vectorial",
+            dxy=0.108,
+            dz=0.3,
+            psf_size_z=15,
+            psf_size_xy=15,
+            background=0.0,
+            slit_width=0.9,
+        )
+        arm_kwargs = dict(
+            na=common_kwargs["na"],
+            wavelength=common_kwargs["wavelength"],
+            ni=common_kwargs["ni"],
+            ns=common_kwargs["ns"],
+            ni0=common_kwargs["ni0"],
+            tg=common_kwargs["tg"],
+            tg0=common_kwargs["tg0"],
+            ng=common_kwargs["ng"],
+            ng0=common_kwargs["ng0"],
+            ti0=common_kwargs["ti0"],
+            oversample_factor=common_kwargs["oversample_factor"],
+            psf_model=common_kwargs["psf_model"],
+            dxy=common_kwargs["dxy"],
+            dz=common_kwargs["dz"],
+            psf_size_z=common_kwargs["psf_size_z"],
+            psf_size_xy=common_kwargs["psf_size_xy"],
+            background=common_kwargs["background"],
+        )
+        light_sheet_kwargs = {
+            key: value for key, value in common_kwargs.items() if key != "slit_width"
+        }
+
+        directions = [(90.0, 0.0), (70.0, 40.0)]
+        for polar_deg, azimuthal_deg in directions:
+            with self.subTest(polar_deg=polar_deg, azimuthal_deg=azimuthal_deg):
+                aslm = seeds.generate_psf_seed(
+                    psf_mode="aslm",
+                    polar_deg=polar_deg,
+                    azimuthal_deg=azimuthal_deg,
+                    **common_kwargs,
+                )
+                light_sheet = seeds.generate_psf_seed(
+                    psf_mode="light_sheet",
+                    polar_deg=polar_deg,
+                    azimuthal_deg=azimuthal_deg,
+                    **light_sheet_kwargs,
+                )
+
+                detection_arm = seeds.generate_theoretical_psf(
+                    detection_na=common_kwargs["detection_na"],
+                    illumination_na=common_kwargs["illumination_na"],
+                    **arm_kwargs,
+                )
+                illumination_arm = seeds.generate_theoretical_psf(
+                    detection_na=common_kwargs["illumination_na"],
+                    illumination_na=common_kwargs["illumination_na"],
+                    **arm_kwargs,
+                )
+
+                n = common_kwargs["psf_size_z"]
+                sigma = (0.9 / 0.3) / (2.0 * math.sqrt(2.0 * math.log(2.0)))
+                k = np.arange(2 * n - 1, dtype=np.float64)
+                taps = np.exp(-0.5 * ((k - (n - 1)) / sigma) ** 2).astype(np.float32)
+
+                gated = np.clip(
+                    fftconvolve(
+                        illumination_arm, taps.reshape(-1, 1, 1), mode="same", axes=0
+                    ),
+                    0.0,
+                    None,
+                ).astype(np.float32)
+
+                rotated = seeds.rotate_illumination(
+                    gated,
+                    polar_deg=polar_deg,
+                    azimuthal_deg=azimuthal_deg,
+                    dxy=common_kwargs["dxy"],
+                    dz=common_kwargs["dz"],
+                )
+                expected = seeds.normalise_psf(detection_arm * rotated)
+
+                np.testing.assert_allclose(aslm, expected, rtol=1e-5, atol=1e-9)
+                self.assertFalse(np.allclose(aslm, light_sheet))
+
+    def test_aslm_removes_out_of_focus_energy_at_every_z_beyond_dof(self):
+        common_kwargs = dict(
+            na=1.1,
+            detection_na=1.1,
+            illumination_na=0.6,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=1.33,
             tg=None,
             tg0=None,
             ng=None,
@@ -797,47 +1023,75 @@ class SeedTests(unittest.TestCase):
             ti0=None,
             oversample_factor=3,
             psf_model="vectorial",
-            dxy=dxy,
-            dz=0.3,
-            psf_size_z=5,
-            psf_size_xy=psf_size_xy,
+            dxy=0.1,
+            dz=0.1,
+            psf_size_z=61,
+            psf_size_xy=64,
             background=0.0,
             polar_deg=90.0,
             azimuthal_deg=0.0,
         )
+        dxy = common_kwargs["dxy"]
+        dz = common_kwargs["dz"]
 
-        def _fresh_pair():
-            return [
-                np.ones((5, 5, 5), dtype=np.float32),
-                np.ones((5, 5, 5), dtype=np.float32),
-            ]
+        single = seeds.generate_psf_seed(psf_mode="single", **common_kwargs)
+        light_sheet = seeds.generate_psf_seed(psf_mode="light_sheet", **common_kwargs)
+        aslm = seeds.generate_psf_seed(psf_mode="aslm", slit_width=2.0, **common_kwargs)
 
-        with mock.patch.object(
-            seeds, "generate_theoretical_psf", side_effect=_fresh_pair()
-        ):
-            light_sheet_reference = seeds.generate_psf_seed(
-                psf_mode="light_sheet", **base_kwargs
+        single_peak = np.unravel_index(np.argmax(single), single.shape)
+        z0_single = single_peak[0]
+        axial_profile_single = single[:, single_peak[1], single_peak[2]]
+        dof = _half_max_width(axial_profile_single, dz)
+
+        lateral_profile_single = single[z0_single, single_peak[1], :]
+        r_core = _half_max_width(lateral_profile_single, dxy) / 2.0
+
+        def _core_fraction_out(psf):
+            peak = np.unravel_index(np.argmax(psf), psf.shape)
+            z0, y0, x0 = peak
+            yy, xx = np.meshgrid(
+                np.arange(psf.shape[1]), np.arange(psf.shape[2]), indexing="ij"
             )
+            core_mask = np.hypot((yy - y0) * dxy, (xx - x0) * dxy) <= r_core
+            e_plane = psf.sum(axis=(1, 2), dtype=np.float64)
+            e_core = (psf * core_mask[None, :, :]).sum(axis=(1, 2), dtype=np.float64)
+            fraction_out = np.ones_like(e_plane)
+            positive = e_plane > 0
+            fraction_out[positive] = 1.0 - (e_core[positive] / e_plane[positive])
+            return z0, e_plane, fraction_out
 
-        cases = [
-            ("below full extent", 0.9 * full_extent, False),
-            ("at full extent", full_extent, True),
-            ("above full extent", 2 * full_extent, True),
+        z0_light_sheet, e_plane_light_sheet, fraction_out_light_sheet = (
+            _core_fraction_out(light_sheet)
+        )
+        _, e_plane_aslm, fraction_out_aslm = _core_fraction_out(aslm)
+
+        max_e_light_sheet = e_plane_light_sheet.max()
+        max_e_aslm = e_plane_aslm.max()
+
+        tested_planes = []
+        for z in range(single.shape[0]):
+            if abs(z - z0_light_sheet) * dz <= dof + dz:
+                continue
+            if e_plane_light_sheet[z] < 1e-6 * max_e_light_sheet:
+                continue
+            if e_plane_aslm[z] < 1e-6 * max_e_aslm:
+                continue
+            tested_planes.append(z)
+
+        self.assertGreaterEqual(len(tested_planes), 10)
+        self.assertTrue(any(z < z0_light_sheet for z in tested_planes))
+        self.assertTrue(any(z > z0_light_sheet for z in tested_planes))
+
+        violations = [
+            (z, float(fraction_out_aslm[z]), float(fraction_out_light_sheet[z]))
+            for z in tested_planes
+            if fraction_out_aslm[z] > fraction_out_light_sheet[z] + 1e-6
         ]
-
-        for label, slit_width, expect_equal in cases:
-            with self.subTest(label=label):
-                with mock.patch.object(
-                    seeds, "generate_theoretical_psf", side_effect=_fresh_pair()
-                ):
-                    aslm_psf = seeds.generate_psf_seed(
-                        psf_mode="aslm", slit_width=slit_width, **base_kwargs
-                    )
-
-                if expect_equal:
-                    np.testing.assert_array_equal(aslm_psf, light_sheet_reference)
-                else:
-                    self.assertFalse(np.array_equal(aslm_psf, light_sheet_reference))
+        self.assertEqual(
+            violations,
+            [],
+            msg=f"D-14 violated at planes (z, aslm, light_sheet): {violations}",
+        )
 
     def test_generate_psf_seed_has_no_timing_jitter_parameter(self):
         parameter_names = tuple(inspect.signature(seeds.generate_psf_seed).parameters)
@@ -875,16 +1129,17 @@ class SeedTests(unittest.TestCase):
         # G-01-24: the negative test above (no timing-jitter *parameter*) is
         # satisfiable by an empty docstring and says nothing about what ASLM
         # mode actually models. This positive assertion is the deliberate
-        # complement: __doc__ must disclose the static, midpoint-centered,
-        # assumed-perfectly-synchronized model (ASLM-04), not just omit a
+        # complement: __doc__ must disclose the sweep-integrated,
+        # assumed-perfectly-synchronized model (D-01/D-02), not just omit a
         # timing knob.
         doc = (seeds.generate_psf_seed.__doc__ or "").lower()
         self.assertTrue(doc, msg="generate_psf_seed.__doc__ must not be empty")
 
         required_substrings = (
-            "static",
+            "sweep",
+            "convol",
+            "propagation",
             "slit",
-            "geometric midpoint",
             "perfectly synchronized",
             "assum",
             "jitter",
@@ -896,32 +1151,32 @@ class SeedTests(unittest.TestCase):
                 doc,
                 msg=(
                     f"generate_psf_seed.__doc__ must disclose {substring!r} as "
-                    "part of the assumed-perfect-synchronization ASLM model "
-                    "(ASLM-04, G-01-24)"
+                    "part of the sweep-integrated, assumed-perfect-synchronization "
+                    "ASLM model (D-01/D-02)"
                 ),
             )
 
-        # G-01-24 error-message half: the too-narrow-slit ValueError is the
+        # G-01-24 error-message half: the no-positive-energy ValueError is the
         # ASLM error a user is most likely to hit while forming a mental
         # model of the mode, so it must carry the same disclosure as the
         # docstring above. Call the private helper directly rather than
         # routing through generate_psf_seed -- no mocking or psfmodels call
         # is needed, and this keeps the assertion about message text, not
         # about PSF numerics.
-        illumination = np.zeros((9, 9, 9), dtype=np.float32)
-        illumination[:, :, 0] = 1.0
         with self.assertRaises(ValueError) as ctx:
-            seeds._apply_aslm_slit_gate(illumination, 2, 0.001, 0.108, 0.3)
+            seeds._apply_aslm_slit_gate(
+                np.zeros((9, 9, 9), dtype=np.float32), 0.9, 0.3
+            )
         message = str(ctx.exception).lower()
         self.assertIn(
             "perfectly synchronized",
             message,
-            msg="too-narrow-slit ValueError must disclose the perfectly-synchronized model (G-01-24)",
+            msg="ASLM energy-guard ValueError must disclose the perfectly-synchronized model (G-01-24)",
         )
         self.assertIn(
             "slit_width",
             message,
-            msg="too-narrow-slit ValueError must point the user at slit_width (G-01-24)",
+            msg="ASLM energy-guard ValueError must point the user at slit_width (G-01-24)",
         )
 
     # Tracer (plan 07-02 Task 1): drives cli.estimate_psf_main twice -- once
@@ -1119,71 +1374,6 @@ class SeedTests(unittest.TestCase):
                 )
                 np.testing.assert_array_equal(first, second)
 
-    # Plan 07-03 Task 2 (ROT-03): the mirror image of the existing axis-0 and
-    # axis-2 gate-axis cases, and the first gate-axis case the pre-v1.1
-    # one-degree-of-freedom API could not express at all.
-    def test_gate_axis_resolves_to_y_for_out_of_plane_direction(self):
-        captured = self._capture_aslm_gate(polar_deg=90.0, azimuthal_deg=90.0)
-        gated = captured["gated"]
-        axis0_profile = gated.sum(axis=(1, 2))
-        axis1_profile = gated.sum(axis=(0, 2))
-        axis2_profile = gated.sum(axis=(0, 1))
-
-        self.assertEqual(int(np.argmax(axis1_profile)), 4)
-        self.assertLess(axis1_profile[0], axis1_profile[4])
-        self.assertTrue(np.allclose(axis0_profile, axis0_profile[0]))
-        self.assertTrue(np.allclose(axis2_profile, axis2_profile[0]))
-
-        # Exact-tie sub-case: (polar_deg=90, azimuthal_deg=45) has equal Y
-        # and X direction components. This is resolved by
-        # seeds._resolve_slit_axis's tolerance-based snap-before-argmax
-        # (RIGHT_ANGLE_TOLERANCE), not a bare argmax -- a bare
-        # np.argmax(np.abs(direction)) at this exact tie is not portable
-        # across platforms (Windows and Linux libm sin/cos differ by 1 ULP
-        # here, flipping the tie-break).
-        tie_direction = seeds._spherical_direction(90.0, 45.0)
-        self.assertEqual(seeds._resolve_slit_axis(tie_direction), 1)
-
-        tie_captured = self._capture_aslm_gate(polar_deg=90.0, azimuthal_deg=45.0)
-        tie_gated = tie_captured["gated"]
-        tie_axis0_profile = tie_gated.sum(axis=(1, 2))
-        tie_axis1_profile = tie_gated.sum(axis=(0, 2))
-        tie_axis2_profile = tie_gated.sum(axis=(0, 1))
-
-        self.assertEqual(int(np.argmax(tie_axis1_profile)), 4)
-        self.assertLess(tie_axis1_profile[0], tie_axis1_profile[4])
-        self.assertTrue(np.allclose(tie_axis0_profile, tie_axis0_profile[0]))
-        self.assertTrue(np.allclose(tie_axis2_profile, tie_axis2_profile[0]))
-
-    def test_slit_axis_override_accepts_y(self):
-        # Auto-resolved axis for (polar_deg=90, azimuthal_deg=0) is 2 (X);
-        # the override forces axis 1 (Y) instead.
-        captured = self._capture_aslm_gate(
-            polar_deg=90.0, azimuthal_deg=0.0, slit_axis=1
-        )
-        gated = captured["gated"]
-        axis0_profile = gated.sum(axis=(1, 2))
-        axis1_profile = gated.sum(axis=(0, 2))
-        axis2_profile = gated.sum(axis=(0, 1))
-
-        self.assertEqual(int(np.argmax(axis1_profile)), 4)
-        self.assertLess(axis1_profile[0], axis1_profile[4])
-        self.assertTrue(np.allclose(axis0_profile, axis0_profile[0]))
-        self.assertTrue(np.allclose(axis2_profile, axis2_profile[0]))
-
-        # D-09: the widened {0,1,2} override range did not disturb the
-        # always-via-dxy conversion rule -- slit_width_px=2 at dxy=0.108 must
-        # gate the identical axis-1 marginal as the equivalent
-        # slit_width=2*dxy call.
-        captured_px = self._capture_aslm_gate(
-            polar_deg=90.0,
-            azimuthal_deg=0.0,
-            slit_axis=1,
-            slit_width=None,
-            slit_width_px=2,
-        )
-        np.testing.assert_array_equal(captured_px["gated"], gated)
-
     def test_non_finite_rotation_angles_reject_before_any_psf_generation(self):
         # normalise_psf already applies nan_to_num, so without this guard a
         # NaN/inf angle would produce a silently all-zero seed flowing into
@@ -1242,103 +1432,6 @@ class SeedTests(unittest.TestCase):
                             psf_mode=psf_mode, **base_kwargs, **extra_kwargs
                         )
                     generate_theoretical_psf.assert_not_called()
-
-    # Plan 07-03 Task 3: discharges ROADMAP.md Phase 7 Success Criterion 3 --
-    # the gate must stay locked to the beam under any 3D direction, and a
-    # genuinely non-planar orientation must still produce a narrow-slit seed
-    # rather than an error or a mis-oriented gate. D-05 makes a single
-    # snapped gate axis the right thing to measure even when the direction
-    # itself is oblique.
-    #
-    # This is a validity-and-narrowing assertion, not a bit-identity one --
-    # there is no pre-v1.1 reference output for a non-planar direction, so
-    # there is nothing to be bit-identical to (07-RESEARCH.md Pitfall 5).
-    def test_aslm_seed_at_non_planar_direction_stays_narrow(self):
-        common_kwargs = dict(
-            na=1.0,
-            detection_na=1.0,
-            illumination_na=0.2,
-            wavelength=0.561,
-            ni=1.33,
-            ns=1.33,
-            ni0=None,
-            tg=None,
-            tg0=None,
-            ng=None,
-            ng0=None,
-            ti0=None,
-            oversample_factor=1,
-            psf_model="vectorial",
-            dxy=0.108,
-            dz=0.3,
-            psf_size_z=15,
-            psf_size_xy=15,
-            background=0.0,
-            polar_deg=70.0,
-            azimuthal_deg=40.0,
-        )
-
-        # At (polar_deg=70, azimuthal_deg=40) all three components of the
-        # propagation direction are non-zero -- genuinely non-planar and
-        # unreachable by the pre-v1.1 single-angle API.
-        direction = seeds._spherical_direction(70.0, 40.0)
-        for component in direction:
-            self.assertGreater(abs(float(component)), 0.1)
-
-        # Computed, not hardcoded: the auto-resolved gate axis for this
-        # direction (recorded in 07-03-SUMMARY.md).
-        gate_axis = int(np.argmax(np.abs(direction)))
-
-        light_sheet = seeds.generate_psf_seed(psf_mode="light_sheet", **common_kwargs)
-        aslm = seeds.generate_psf_seed(
-            psf_mode="aslm", slit_width=0.4, **common_kwargs
-        )
-
-        self.assertEqual(aslm.shape, (15, 15, 15))
-        self.assertEqual(aslm.dtype, np.float32)
-        self.assertTrue(np.isfinite(aslm).all())
-        self.assertLess(abs(float(aslm.sum(dtype=np.float64)) - 1.0), 1e-5)
-        self.assertFalse(np.allclose(aslm, light_sheet))
-
-        def marginal_variance(psf, axis):
-            other_axes = tuple(a for a in range(3) if a != axis)
-            marginal = psf.sum(axis=other_axes, dtype=np.float64)
-            idx = np.arange(marginal.shape[0], dtype=np.float64)
-            centroid = float((marginal * idx).sum() / marginal.sum())
-            return float(
-                (marginal * (idx - centroid) ** 2).sum() / marginal.sum()
-            )
-
-        # Deviation from 07-03-PLAN.md's literal text, verified directly
-        # against this implementation (see 07-03-SUMMARY.md "Deviations"):
-        # the ASLM gate is applied to axis `gate_axis` in the PRE-rotation
-        # frame (seeds._apply_aslm_slit_gate runs before rotate_illumination
-        # in generate_psf_seed). For the four legacy cardinal directions the
-        # subsequent rotation is an exact 90-degree axis swap, so the
-        # narrowed pre-rotation axis and the narrowed post-rotation axis
-        # happen to share the same index. For a genuinely oblique direction
-        # like this one, rotate_illumination's isotropic pipeline instead
-        # smears that pre-rotation axis across all three post-rotation axes,
-        # weighted by seeds._rotation_matrix(...)[:, gate_axis] -- so the
-        # array axis that actually ends up narrowed is
-        # argmax(abs(rotation_matrix[:, gate_axis])), not gate_axis itself.
-        # Verified empirically (scratchpad, this session): forcing
-        # slit_axis=2 (this direction's auto-resolved gate_axis) leaves the
-        # final axis-2 marginal variance UNCHANGED relative to light_sheet
-        # (8.371 vs 8.359 -- no real narrowing), while the final axis-0
-        # marginal variance drops by ~73% (0.506 vs 1.878), exactly matching
-        # this formula's prediction of narrowed_axis=0. Measuring against
-        # the literal gate_axis would falsely fail a correctly-narrowing
-        # implementation; measuring against the true post-rotation axis
-        # proves the gate is genuinely locked to the beam without weakening
-        # the assertion.
-        rotation = seeds._rotation_matrix(70.0, 40.0)
-        narrowed_axis = int(np.argmax(np.abs(rotation[:, gate_axis])))
-
-        self.assertLess(
-            marginal_variance(aslm, narrowed_axis),
-            marginal_variance(light_sheet, narrowed_axis),
-        )
 
 
 if __name__ == "__main__":
