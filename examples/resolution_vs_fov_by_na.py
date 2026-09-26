@@ -56,9 +56,10 @@ ASLM_SCRIPT = Path(__file__).resolve().parent / "aslm_resolution_vs_fov.py"
 OUTPUT_NAME = "resolution_vs_fov_by_na.pdf"
 
 # D-03: axis labels copied verbatim from both shipped figures so the paired
-# page reads identically to the two per-script PNGs.
+# page still reads identically to the two per-script PNGs after 8.1 D-09
+# rewired both scripts to the system-PSF measurement.
 X_LABEL = "position along beam propagation axis (um)"
-Y_LABEL = "illumination-limited axial resolution, transverse FWHM (um)"
+Y_LABEL = "system-PSF axial FWHM (um)"
 
 LIGHT_SHEET_LABEL = "static light sheet"
 ASLM_LABEL_TEMPLATE = "ASLM (slit_width={:.2f} um)"
@@ -172,7 +173,7 @@ def build_na_page(
     ax.set_title(
         f"Resolution vs. FOV at illumination_na={na:.2f}\n"
         f"detection_na={detection_na:.2f}, slit_width={slit_width:.2f} um, "
-        f"window=+-{half_extent:.1f} um"
+        f"FOV=+-{half_extent:.1f} um"
     )
     fig.tight_layout()
     return fig
@@ -193,7 +194,7 @@ def main() -> None:
     aslm = load_example_script(ASLM_SCRIPT)
 
     paired = pair_sweeps(light_sheet, aslm)
-    half_extent = (light_sheet.COMMON["psf_size_z"] - 1) * light_sheet.COMMON["dz"] / 2.0
+    half_extent = max(abs(v) for v in light_sheet.FOV_POSITIONS_UM)
 
     for na, ls_centered, ls_widths, aslm_centered, aslm_widths in paired:
         ls_finite = int(np.isfinite(ls_widths).sum())

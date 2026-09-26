@@ -56,6 +56,8 @@ _FORBIDDEN_GAP_FILL_NAMES = {
 _FORBIDDEN_REDERIVATION_NAMES = {
     "measure_beam_width_profile",
     "measure_gated_beam_width_profile",
+    "measure_light_sheet_system_fwhm_profile",
+    "measure_aslm_system_fwhm_profile",
 }
 
 

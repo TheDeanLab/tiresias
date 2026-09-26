@@ -54,7 +54,7 @@ _INTENTIONAL_TEST_NAME_MARKER = "retired-surface-test-name"
 
 
 class RetiredSlitAxisSurfaceTests(unittest.TestCase):
-    def test_no_retired_slit_axis_surface_in_tracked_sources(self):
+    def test_no_retired_slit_surface_in_tracked_sources(self):
         root = Path(__file__).resolve().parents[1]
         try:
             result = subprocess.run(

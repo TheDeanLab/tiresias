@@ -1,17 +1,18 @@
-"""Regression tests for the Phase 8 resolution-vs-FOV example scripts.
+"""Regression tests for the Phase 8 / 8.1 resolution-vs-FOV example scripts.
 
-Pins EX-04, EX-05, and EX-06 as permanent regression gates, not one-shot
-migration checks. Three things are locked here. First, the packaging
-contract (EX-06): both new scripts carry the same PEP 723 metadata block the
-two shipped example scripts already use -- dependencies scoped to what they
-actually import, local `tiresias` resolved via `[tool.uv.sources]`, and no
-GPU array library in resolution. Second, comparability (roadmap Success
-Criterion 2): the two scripts declare one identical NA sweep, one identical
-fixed detection NA, and one identical window, so the duplicated constant
-blocks the single-file PEP 723 philosophy requires cannot silently drift
-apart. Third, the milestone's numerical claim: measured through the scripts'
-own `run_sweep` wiring, the ASLM profile is flatter than the light-sheet
-profile at the same illumination NA.
+Pins EX-04, EX-05, EX-06, and 8.1 D-09 as permanent regression gates, not
+one-shot migration checks. Three things are locked here. First, the
+packaging contract (EX-06): both new scripts carry the same PEP 723
+metadata block the two shipped example scripts already use -- dependencies
+scoped to what they actually import, local `tiresias` resolved via
+`[tool.uv.sources]`, and no GPU array library in resolution. Second,
+comparability (roadmap Success Criterion 2): the two scripts declare one
+identical NA sweep, one identical fixed detection NA, one identical
+COMMON block, and one identical FOV grid, so the duplicated constant blocks
+the single-file PEP 723 philosophy requires cannot silently drift apart.
+Third, the milestone's numerical claim: measured through the scripts' own
+`run_sweep` wiring, the ASLM system-PSF axial FWHM curve is flatter than the
+light-sheet system-PSF axial FWHM curve at the same illumination NA.
 """
 
 from __future__ import annotations
@@ -55,10 +56,10 @@ _HEADER_LINES = 17
 _IMPORT_ALLOWLIST = {"__future__", "pathlib", "sys", "numpy", "matplotlib", "simulate"}
 
 # Gap-filling/interpolating/NaN-replacing routines that would manufacture
-# data the simulation never produced. Roughly 30-40 percent of the shipped
-# +-200.1 um window is legitimately unmeasurable at every NA (08-RESEARCH.md
-# Pitfall 5); matplotlib already renders those NaN entries as honest breaks
-# in the line.
+# data the simulation never produced. The system-PSF measurement is
+# DOF-confined (8.1 D-09), so gaps are not expected across the shipped
+# +-50 um FOV window; matplotlib still renders any NaN entry as an honest
+# break in the line rather than silently smoothing over it.
 _FORBIDDEN_GAP_FILL_NAMES = {
     "nan_to_num",
     "interp",
@@ -68,6 +69,10 @@ _FORBIDDEN_GAP_FILL_NAMES = {
     "ffill",
     "bfill",
 }
+
+# 8.1 D-09: neither rewired script may call the retired self-gated function
+# any more -- the system-PSF functions below replace it.
+_FORBIDDEN_RETIRED_NAMES = {"measure_gated_beam_width_profile"}
 
 
 def _load(relative_path: str):
@@ -210,9 +215,9 @@ class Pep723PackagingTests(unittest.TestCase):
 
 
 class SharedSweepTests(unittest.TestCase):
-    """Roadmap Success Criterion 2 / D-01 / D-06: one shared axis, not two that can drift."""
+    """Roadmap Success Criterion 2 / D-05 / D-06 / D-09: one shared axis, not two that can drift."""
 
-    def test_both_scripts_share_one_sweep_and_one_window(self):
+    def test_both_scripts_share_one_sweep_one_window_and_one_fov(self):
         aslm = _load("examples/aslm_resolution_vs_fov.py")
         light_sheet = _load("examples/light_sheet_resolution_vs_fov.py")
 
@@ -224,15 +229,20 @@ class SharedSweepTests(unittest.TestCase):
         self.assertEqual(aslm.NA_SWEEP, light_sheet.NA_SWEEP)
         self.assertEqual(aslm.DETECTION_NA, light_sheet.DETECTION_NA)
         self.assertEqual(aslm.COMMON, light_sheet.COMMON)
+        self.assertEqual(aslm.FOV_POSITIONS_UM, light_sheet.FOV_POSITIONS_UM)
+
+        self.assertIn(0.0, aslm.FOV_POSITIONS_UM)
+
+        fov = aslm.FOV_POSITIONS_UM
+        for i, value in enumerate(fov):
+            self.assertEqual(value, -fov[-1 - i])
+
+        self.assertEqual(aslm.COMMON["ni0"], aslm.COMMON["ni"])
+        self.assertEqual(aslm.COMMON["dz"], aslm.COMMON["dxy"])
 
         for na in aslm.NA_SWEEP:
             self.assertGreaterEqual(na, 0.10)
             self.assertLessEqual(na, 0.45)
-
-        self.assertEqual(aslm.COMMON["psf_size_z"], 1335)
-        self.assertEqual(aslm.COMMON["dz"], 0.300)
-        half_window = (aslm.COMMON["psf_size_z"] - 1) * aslm.COMMON["dz"] / 2.0
-        self.assertAlmostEqual(half_window, 200.1, places=6)
 
 
 class MilestoneClaimTests(unittest.TestCase):
@@ -243,36 +253,29 @@ class MilestoneClaimTests(unittest.TestCase):
         self.light_sheet = _load("examples/light_sheet_resolution_vs_fov.py")
 
     def test_aslm_profile_is_flatter_than_light_sheet_at_the_same_na(self):
-        # psf_size_z patched to 61 so this test costs a fraction of a second
-        # per NA instead of ~10s at the shipped window; the patch is
-        # reverted by mock.patch.dict's context-manager exit. Only NA 0.40
-        # and 0.45 are used: at this reduced window the +-9.15 um span is
-        # far too narrow to reach the divergent far field at low NA, so the
-        # ungated-vs-gated ratio collapses toward 1.0 there and the
-        # assertion would be vacuous (measured ungated-to-gated relative
-        # ratios at this reduced window: 1.000 at NA 0.10, 0.999 at 0.15,
-        # 0.990 at 0.25, 0.737 at 0.35, 0.523 at 0.40, 0.618 at 0.45). The
-        # full +-200.1 um window the scripts actually ship shows the effect
-        # across the whole band; this test trades that coverage for speed
-        # and so must stay at the NA values where the effect is
-        # unambiguous at 61 slices. Asserted against the 0.75 factor rather
-        # than the measured ratios themselves, so a psfmodels version bump
-        # does not make this test brittle.
+        # RAYLEIGH_WINDOW's psf_size_z is patched from 1335 to 61 so the
+        # light-sheet script's Rayleigh annotation (a much larger window
+        # than the main COMMON sweep) costs a fraction of a second instead
+        # of ~10s per NA; the patch is reverted by mock.patch.dict's
+        # context-manager exit. Only 4 positions_um are measured
+        # (0.0/5.0/10.0/20.0 um), the same points the planner measured
+        # during planning (0.579/0.672/0.602/1.022 um at NA=0.45, ratio
+        # 1.77 for light_sheet vs about 1.0 for ASLM). Asserted against the
+        # 0.75 factor rather than the measured ratios themselves, so a
+        # psfmodels version bump does not make this test brittle.
         for na in (0.40, 0.45):
             with self.subTest(na=na):
-                with mock.patch.dict(self.aslm.COMMON, {"psf_size_z": 61}), mock.patch.dict(
-                    self.light_sheet.COMMON, {"psf_size_z": 61}
-                ):
+                with mock.patch.dict(self.light_sheet.RAYLEIGH_WINDOW, {"psf_size_z": 61}):
                     # Call each script's OWN run_sweep, not the simulate
                     # functions directly -- the point is to prove the claim
-                    # survives the scripts' own wiring, including the gate
-                    # the ASLM script applies through
-                    # measure_gated_beam_width_profile. The two return
+                    # survives the scripts' own wiring. The two return
                     # arities differ: ASLM yields a triple, light-sheet a
                     # quadruple.
-                    _na_a, _centered_a, widths_a = self.aslm.run_sweep(nas=(na,))[0]
-                    _na_l, _centered_l, widths_l, _rayleigh = self.light_sheet.run_sweep(
-                        nas=(na,)
+                    _na_a, _positions_a, widths_a = self.aslm.run_sweep(
+                        nas=(na,), positions_um=(0.0, 5.0, 10.0, 20.0)
+                    )[0]
+                    _na_l, _positions_l, widths_l, _rayleigh = self.light_sheet.run_sweep(
+                        nas=(na,), positions_um=(0.0, 5.0, 10.0, 20.0)
                     )[0]
 
                 ratio_aslm = np.nanmax(widths_a) / np.nanmin(widths_a)
@@ -280,10 +283,10 @@ class MilestoneClaimTests(unittest.TestCase):
                 self.assertLess(ratio_aslm, 0.75 * ratio_light_sheet)
 
     def test_scripts_do_not_fill_the_unmeasurable_gaps(self):
-        # Defends: roughly 30-40 percent of the shipped +-200.1 um window is
-        # legitimately unmeasurable at every NA; matplotlib already renders
-        # those NaN entries as honest breaks in the line, and filling them
-        # would manufacture data the simulation never produced.
+        # Defends: the system-PSF measurement is DOF-confined, so gaps are
+        # not expected across the shipped +-50 um FOV window; matplotlib
+        # already renders any NaN entry as an honest break in the line, and
+        # filling one would manufacture data the simulation never produced.
         for relative_path in _NEW_SCRIPTS:
             with self.subTest(script=relative_path):
                 offenders = _called_names(_ROOT / relative_path) & _FORBIDDEN_GAP_FILL_NAMES
@@ -293,10 +296,25 @@ class MilestoneClaimTests(unittest.TestCase):
                     f"{relative_path} calls gap-filling routine(s): {offenders}",
                 )
 
+    def test_scripts_measure_through_the_system_psf_functions(self):
+        # 8.1 D-09: neither script may re-derive its curve through the
+        # retired self-gated function; each must call its own new
+        # system-PSF measurement function (and, for light_sheet, keep the
+        # untouched illumination-only Rayleigh annotation, D-06).
+        aslm_calls = _called_names(_ROOT / "examples/aslm_resolution_vs_fov.py")
+        light_sheet_calls = _called_names(_ROOT / "examples/light_sheet_resolution_vs_fov.py")
+
+        self.assertIn("measure_aslm_system_fwhm_profile", aslm_calls)
+        self.assertIn("measure_light_sheet_system_fwhm_profile", light_sheet_calls)
+        self.assertIn("measure_beam_width_profile", light_sheet_calls)
+
+        self.assertEqual(aslm_calls & _FORBIDDEN_RETIRED_NAMES, set())
+        self.assertEqual(light_sheet_calls & _FORBIDDEN_RETIRED_NAMES, set())
+
     def test_a_rejected_rayleigh_point_does_not_stop_the_light_sheet_sweep(self):
         # This test must NEVER assert that the real locate_rayleigh_range
-        # raises: at the shipped +-200.1 um window every NA from 0.10 to
-        # 0.45 was measured to resolve cleanly, so the handler below is a
+        # raises: at the shipped Rayleigh window every NA from 0.10 to 0.45
+        # was measured to resolve cleanly, so the handler below is a
         # defensive branch that may never trigger in production -- roadmap
         # Success Criterion 5's wording is either/or. This test proves the
         # skip-and-continue handler itself works, via a synthetic forced
@@ -304,10 +322,10 @@ class MilestoneClaimTests(unittest.TestCase):
         def _always_raise(*_args, **_kwargs):
             raise ValueError("forced for test: synthetic Rayleigh rejection")
 
-        with mock.patch.dict(self.light_sheet.COMMON, {"psf_size_z": 61}), mock.patch.object(
-            simulate, "locate_rayleigh_range", side_effect=_always_raise
-        ):
-            results = self.light_sheet.run_sweep(nas=(0.25, 0.35))
+        with mock.patch.dict(
+            self.light_sheet.RAYLEIGH_WINDOW, {"psf_size_z": 61}
+        ), mock.patch.object(simulate, "locate_rayleigh_range", side_effect=_always_raise):
+            results = self.light_sheet.run_sweep(nas=(0.25, 0.35), positions_um=(0.0,))
 
         self.assertEqual(len(results), 2)
         for _na, _centered_um, widths_um, rayleigh in results:

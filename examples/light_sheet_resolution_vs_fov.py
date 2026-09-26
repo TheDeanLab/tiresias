@@ -31,7 +31,7 @@
 # keeping D-01's [tool.uv.sources] mechanism and the zero-extra-flag
 # invocation intact. See .planning/phases/04-pep-723-example-scripts/
 # 04-02-SUMMARY.md for the full remediation-ladder writeup.
-"""Plot static light-sheet axial resolution vs. position across a fixed FOV window (EX-04)."""
+"""Plot static light-sheet system-PSF axial FWHM vs. position across a fixed FOV window (EX-04, 8.1 D-09)."""
 
 from __future__ import annotations
 
@@ -48,15 +48,13 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import simulate
 
-# D-01: detection NA held fixed across the whole illumination_na sweep and
-# named in the figure, identical to examples/aslm_resolution_vs_fov.py's own
-# detection NA so the two scripts' figures are directly comparable (roadmap
-# Success Criterion 2). Deliberately NOT threaded into the measurement call
-# below -- MEAS-01 locks this measurement to the pre-rotation illumination
-# PSF, and feeding the detection arm in would mix the detection PSF's own
-# axial extent into the result and destroy the NA dependence this plot
-# exists to show (the same warning appears at simulate/beam_profile.py lines
-# 71-77).
+# 8.1 D-05: detection NA held fixed across the whole illumination_na sweep
+# and named in the figure, identical to examples/aslm_resolution_vs_fov.py's
+# own detection NA so the two scripts' figures are directly comparable
+# (roadmap Success Criterion 2). It IS now threaded into the measurement
+# below -- the reported quantity is the system-PSF (detection x effective
+# illumination) axial FWHM, not an illumination-only width (D-06 replaces
+# the retired self-gated measurement's illumination-only scope).
 DETECTION_NA = 1.0
 
 # D-07: five points spanning the validated 0.1-0.45 band, identical to
@@ -71,62 +69,121 @@ NA_SWEEP: tuple[float, ...] = (0.10, 0.15, 0.25, 0.35, 0.45)
 # Duplicated rather than imported from a shared module on purpose: the
 # project's single-file PEP 723 philosophy forbids a shared helper module
 # between example scripts (examples/slit_width_sweep.py's own D-07 comment
-# makes this explicit). Plan 08-04 commits a test that pins this script's
-# NA_SWEEP/DETECTION_NA/COMMON to examples/aslm_resolution_vs_fov.py's own
-# values so the duplication cannot silently drift.
+# makes this explicit). A test pins this script's NA_SWEEP/DETECTION_NA/
+# COMMON/FOV_POSITIONS_UM to examples/aslm_resolution_vs_fov.py's own values
+# so the duplication cannot silently drift.
+#
+# 8.1 D-05/D-09: ni0 equals ni to avoid the psfmodels default-ni0 aberration
+# (RESEARCH Pitfall 1); dz equals dxy because the legacy rot90 fast path
+# relabels pre-rotation axes without resampling instead of resampling them
+# (ROT-04); psf_size_z=61 is the per-position window, because the detection
+# PSF confines the system-PSF axial profile to about the depth of focus, so
+# a much larger window (like the retired gate's +-200.1 um) is unnecessary
+# here.
 COMMON = {
     "wavelength": 0.561,
     "ni": 1.33,
     "ns": 1.33,
+    "ni0": 1.33,
     "dxy": 0.108,
-    # D-01: the fixed +-200 um window at the project's standard dz=0.300
-    # needs 1335 slices -- (1335 - 1) * 0.300 == 400.2 um total extent, i.e.
-    # +-200.1 um once re-centred. Measured cost is about 8.3 s and 372 MB
-    # per PSF generation on CPU, so there is no reason to coarsen dz instead.
-    "dz": 0.300,
-    "psf_size_z": 1335,
+    "dz": 0.108,
+    "psf_size_z": 61,
     "psf_size_xy": 128,
 }
+
+# 8.1 D-05/D-09: the FOV positions at which the system-PSF axial FWHM is
+# measured, one real generate_psf_seed(emitter_offset=p) call per position
+# (via simulate.measure_light_sheet_system_fwhm_profile). Identical to
+# examples/aslm_resolution_vs_fov.py's own FOV_POSITIONS_UM so the two
+# scripts share one x axis. +-50 um (not the retired gate's +-200.1 um)
+# because beyond about 1-2 Rayleigh ranges this light-sheet curve becomes
+# erratic (pencil-beam Fresnel structure) and at |p| >= 100 um it falls
+# below its own waist value -- measured 0.494 um at |p|=100 vs 0.579 um at
+# the waist (illumination_na=0.45). 51 points at 2 um steps, containing
+# exactly 0.0. Measured cost is about 0.45 s per position, so a full sweep
+# over NA_SWEEP takes about 2-3 minutes.
+FOV_POSITIONS_UM: tuple[float, ...] = tuple(float(v) for v in np.linspace(-50.0, 50.0, 51))
+
+# D-06: the Rayleigh-range annotation is illumination-only (unchanged from
+# the shipped Phase 6 `simulate.measure_beam_width_profile` /
+# `simulate.locate_rayleigh_range` pair) and needs a much larger window than
+# the DOF-confined system-PSF measurement above to find the sqrt(2)x-waist
+# crossing -- the project's standard dz=0.300 with 1335 slices spans
+# +-200.1 um once re-centred, the same window the retired gate used to ship.
+# `measure_beam_width_profile` cannot take ni0 (RESEARCH Pitfall 1 does not
+# apply to it), so this annotation carries psfmodels' default-ni0 axial
+# offset of about 0.7 um -- an approximate marker, not a precise boundary.
+RAYLEIGH_WINDOW = {"dz": 0.300, "psf_size_z": 1335}
 
 
 def run_sweep(
     nas: tuple[float, ...] = NA_SWEEP,
+    positions_um: tuple[float, ...] | None = None,
 ) -> list[tuple[float, np.ndarray, np.ndarray, tuple[float, float, float] | None]]:
-    """Measure the light-sheet beam-width profile at each swept NA and annotate its Rayleigh boundary.
+    """Measure the light-sheet system-PSF axial FWHM at each swept NA and annotate its Rayleigh boundary.
 
-    Returns a list of `(na, centered_um, widths_um, rayleigh)` quadruples in
-    the requested order. No slit gate applies to a static light sheet
-    (D-04): `centered_um`/`widths_um` come straight from the shipped Phase 5
-    `simulate.measure_beam_width_profile`, called unmodified. `rayleigh` is
-    either a `(waist_um, left_um, right_um)` triple on the same centred axis
-    as the curve (D-02, annotation only -- it never redefines the fixed
-    window D-01 sets), or None when the Phase 6 locator raised `ValueError`
-    for this NA (roadmap Success Criterion 5). A rejected NA keeps its
-    ordered slot in the returned list and the sweep continues with the
-    remaining points.
+    Returns a list of `(na, positions_um, fwhm_um, rayleigh)` quadruples in
+    the requested order. The curve itself comes from
+    `simulate.measure_light_sheet_system_fwhm_profile(positions_um=positions,
+    detection_na=DETECTION_NA, illumination_na=na, **COMMON)` -- an emitter
+    at FOV position p sits off the illumination waist by p along
+    propagation (D-06). `positions_um` defaults to the module-level
+    `FOV_POSITIONS_UM`, read at call time, so
+    `examples/resolution_vs_fov_by_na.py`'s own `run_sweep()` call and this
+    module's regression tests both see the current value; the returned
+    positions are already centred on the waist home, so no re-centring
+    offset applies to the curve.
+
+    `rayleigh` is separately measured through the illumination-only
+    `simulate.measure_beam_width_profile(**RAYLEIGH_WINDOW)` (D-06 keeps
+    this function for annotation only) over its own, much larger window --
+    it is either a `(waist_um, left_um, right_um)` triple re-centred by that
+    window's own offset (`positions_um[-1] / 2`) onto the same axis as the
+    curve, or None when the Phase 6 locator raised `ValueError` for this NA
+    (roadmap Success Criterion 5). A rejected NA keeps its ordered slot in
+    the returned list and the sweep continues with the remaining points.
     """
+    if positions_um is None:
+        positions_um = FOV_POSITIONS_UM
+    positions = np.asarray(positions_um, dtype=np.float64)
     results: list[tuple[float, np.ndarray, np.ndarray, tuple[float, float, float] | None]] = []
     for na in nas:
-        positions_um, widths_um = simulate.measure_beam_width_profile(illumination_na=na, **COMMON)
-        offset = positions_um[-1] / 2.0
-        centered_um = positions_um - offset
+        centered_um, fwhm_um = simulate.measure_light_sheet_system_fwhm_profile(
+            positions_um=positions,
+            detection_na=DETECTION_NA,
+            illumination_na=na,
+            **COMMON,
+        )
+
+        rayleigh_positions_um, rayleigh_widths_um = simulate.measure_beam_width_profile(
+            illumination_na=na,
+            wavelength=COMMON["wavelength"],
+            ni=COMMON["ni"],
+            ns=COMMON["ns"],
+            dxy=COMMON["dxy"],
+            psf_size_xy=COMMON["psf_size_xy"],
+            **RAYLEIGH_WINDOW,
+        )
+        offset = rayleigh_positions_um[-1] / 2.0
         try:
-            waist_um, left_um, right_um = simulate.locate_rayleigh_range(positions_um, widths_um)
+            waist_um, left_um, right_um = simulate.locate_rayleigh_range(
+                rayleigh_positions_um, rayleigh_widths_um
+            )
         except ValueError as exc:
             print(f"skipped Rayleigh annotation for illumination_na={na!r}: {exc}")
             rayleigh = None
         else:
-            # Subtract the same offset used for centered_um so the
-            # annotation lands on the same centred axis as the curve.
+            # Subtract the same offset used to centre the Rayleigh window so
+            # the annotation lands on the same centred axis as the curve.
             rayleigh = (waist_um - offset, left_um - offset, right_um - offset)
-        results.append((na, centered_um, widths_um, rayleigh))
+        results.append((na, centered_um, fwhm_um, rayleigh))
     return results
 
 
 def print_table(
     results: list[tuple[float, np.ndarray, np.ndarray, tuple[float, float, float] | None]],
 ) -> None:
-    """Print one diagnostic row per swept NA, including the D-02 Rayleigh annotation.
+    """Print one diagnostic row per swept NA, including the D-06 Rayleigh annotation.
 
     Statistics are computed with `np.nanmin`/`np.nanmax`/`np.isfinite(...).sum()`
     so the legitimately unmeasurable NaN positions are excluded from the
@@ -141,10 +198,10 @@ def print_table(
     below is the deliverable, and the max/min ratio and Rayleigh-extent
     columns here do not replace it.
     """
-    half_extent = (COMMON["psf_size_z"] - 1) * COMMON["dz"] / 2.0
+    half_extent = max(abs(v) for v in FOV_POSITIONS_UM)
     print(
         f"illumination NA sweep -- detection_na={DETECTION_NA:.2f}, "
-        f"window=+-{half_extent:.1f} um"
+        f"FOV=+-{half_extent:.1f} um"
     )
     print(
         f"{'na':>6}  {'finite/total':>14}  {'min width (um)':>16}  "
@@ -189,30 +246,31 @@ def print_table(
 def build_sweep_figure(
     results: list[tuple[float, np.ndarray, np.ndarray, tuple[float, float, float] | None]],
 ) -> plt.Figure | None:
-    """Overlay one measured light-sheet axial-resolution-vs-position curve per swept NA.
+    """Overlay one measured light-sheet system-PSF axial FWHM curve per swept NA.
 
     Returns None when no result holds any finite width -- the caller must
     handle that return rather than assume a Figure. An individual NA whose
     `widths_um` is entirely NaN is skipped (no invisible line, no misleading
     legend entry), but every other NA's curve is kept and plotted exactly as
     measured, NaN entries included: matplotlib renders NaN as a break in the
-    line, which is the honest rendering of the far-field positions where the
-    profile never drops to half maximum. These gaps are never filled,
-    interpolated across, clipped, or hidden by narrowing the plotted x
-    range.
+    line. The system-PSF measurement is DOF-confined (D-09), so gaps are not
+    expected across this +-50 um FOV window -- but any NaN that does occur
+    is still plotted as an honest break, never filled, interpolated across,
+    clipped, or hidden by narrowing the plotted x range.
 
-    For each NA whose Rayleigh annotation succeeded (D-02), the left/right
+    For each NA whose Rayleigh annotation succeeded (D-06), the left/right
     boundary is drawn as a thin dotted vertical line in the same colour as
     that NA's curve -- but only when the boundary position falls inside the
-    fixed plotted window (D-01); a boundary that falls outside the window is
-    never drawn off-canvas, and is instead named in the title so the reader
-    learns the Rayleigh point left the window rather than silently seeing
-    nothing. The Rayleigh annotation never rescales or redefines the plotted
-    window -- `ax.set_xlim` is always pinned to the fixed half-extent
-    computed from COMMON, independent of any measured Rayleigh position.
-    Exactly one proxy legend entry describes the dotted lines, regardless of
-    how many NA values were annotated. Any statement about how the curves
-    behave is computed from `results`, never written as fixed text.
+    fixed plotted window (roadmap Success Criterion 2); a boundary that
+    falls outside the window is never drawn off-canvas, and is instead named
+    in the title so the reader learns the Rayleigh point left the window
+    rather than silently seeing nothing. The Rayleigh annotation never
+    rescales or redefines the plotted window -- `ax.set_xlim` is always
+    pinned to the fixed half-extent computed from `FOV_POSITIONS_UM`,
+    independent of any measured Rayleigh position. Exactly one proxy legend
+    entry describes the dotted lines, regardless of how many NA values were
+    annotated. Any statement about how the curves behave is computed from
+    `results`, never written as fixed text.
     """
     plottable = [
         (na, centered_um, widths_um, rayleigh)
@@ -223,7 +281,7 @@ def build_sweep_figure(
         print("no sweep point produced a measurable width -- skipping figure")
         return None
 
-    half_extent = (COMMON["psf_size_z"] - 1) * COMMON["dz"] / 2.0
+    half_extent = max(abs(v) for v in FOV_POSITIONS_UM)
 
     fig, ax = plt.subplots(figsize=(9, 6))
     rayleigh_label_used = False
@@ -250,13 +308,13 @@ def build_sweep_figure(
                 )
 
     ax.set_xlabel("position along beam propagation axis (um)")
-    ax.set_ylabel("illumination-limited axial resolution, transverse FWHM (um)")
+    ax.set_ylabel("system-PSF axial FWHM (um)")
     ax.set_xlim(-half_extent, half_extent)
-    title_second_line = f"detection_na={DETECTION_NA:.2f}, window=+-{half_extent:.1f} um"
+    title_second_line = f"detection_na={DETECTION_NA:.2f}, FOV=+-{half_extent:.1f} um"
     if out_of_window_notes:
         title_second_line += " (" + "; ".join(out_of_window_notes) + ")"
     ax.set_title(
-        "Static light-sheet axial resolution vs. position across the fixed window\n" + title_second_line
+        "Static light-sheet system-PSF axial FWHM vs. FOV position\n" + title_second_line
     )
     ax.legend()
     fig.tight_layout()

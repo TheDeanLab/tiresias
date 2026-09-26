@@ -31,7 +31,7 @@
 # keeping D-01's [tool.uv.sources] mechanism and the zero-extra-flag
 # invocation intact. See .planning/phases/04-pep-723-example-scripts/
 # 04-02-SUMMARY.md for the full remediation-ladder writeup.
-"""Plot ASLM axial resolution vs. position across a fixed FOV window (EX-05)."""
+"""Plot ASLM system-PSF axial FWHM vs. position across a fixed FOV window (EX-05, 8.1 D-09)."""
 
 from __future__ import annotations
 
@@ -48,13 +48,12 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import simulate
 
-# D-06: detection NA held fixed across the whole illumination_na sweep and
-# named in the figure, matching examples/slit_width_sweep.py's own detection
-# NA. It is deliberately NOT threaded into the measurement call below --
-# MEAS-01 locks this measurement to the pre-rotation illumination PSF, and
-# feeding the detection arm in would mix the detection PSF's own axial
-# extent into the result and destroy the NA dependence this plot exists to
-# show (the same warning appears at simulate/beam_profile.py lines 71-77).
+# 8.1 D-05: detection NA held fixed across the whole illumination_na sweep
+# and named in the figure. It IS now threaded into the measurement below --
+# the reported quantity is the system-PSF (detection x effective
+# illumination) axial FWHM, not an illumination-only width, so the detection
+# arm's own axial extent is exactly what this plot must include (D-05
+# replaces the retired self-gated measurement's illumination-only scope).
 DETECTION_NA = 1.0
 
 # D-06: fixed across the whole sweep -- slit_width is not the swept variable
@@ -73,45 +72,74 @@ SLIT_WIDTH = 2.0
 # still spanning the band end to end.
 NA_SWEEP: tuple[float, ...] = (0.10, 0.15, 0.25, 0.35, 0.45)
 
+# 8.1 D-05/D-09: ni0 equals ni to avoid the psfmodels default-ni0 aberration
+# (RESEARCH Pitfall 1); dz equals dxy because the legacy rot90 fast path
+# relabels pre-rotation axes without resampling instead of resampling them
+# (ROT-04); psf_size_z=61 is the per-position window, because the detection
+# PSF confines the system-PSF axial profile to about the depth of focus, so
+# a much larger window (like the retired gate's +-200.1 um) is unnecessary
+# here.
 COMMON = {
     "wavelength": 0.561,
     "ni": 1.33,
     "ns": 1.33,
+    "ni0": 1.33,
     "dxy": 0.108,
-    "dz": 0.300,
-    # D-01: the fixed +-200 um window at the project's standard dz=0.300
-    # needs 1335 slices -- (1335 - 1) * 0.300 == 400.2 um total extent, i.e.
-    # +-200.1 um once re-centred. Measured cost is about 8.3 s and 372 MB
-    # per PSF generation on CPU, so there is no reason to coarsen dz instead.
-    "psf_size_z": 1335,
+    "dz": 0.108,
+    "psf_size_z": 61,
     "psf_size_xy": 128,
 }
+
+# 8.1 D-05/D-09: the FOV positions at which the system-PSF axial FWHM is
+# measured, one real generate_psf_seed(emitter_offset=p) call per position
+# (via simulate.measure_aslm_system_fwhm_profile). +-50 um (not the retired
+# gate's +-200.1 um) because beyond about 1-2 Rayleigh ranges the
+# light-sheet curve this figure is compared against becomes erratic
+# (pencil-beam Fresnel structure) and at |p| >= 100 um it falls below its
+# own waist value -- the shared window is chosen so both curves stay
+# meaningful across it. 51 points at 2 um steps, containing exactly 0.0.
+# Measured cost is about 0.45 s per position, so a full sweep over
+# NA_SWEEP takes about 2-3 minutes.
+FOV_POSITIONS_UM: tuple[float, ...] = tuple(float(v) for v in np.linspace(-50.0, 50.0, 51))
 
 
 def run_sweep(
     nas: tuple[float, ...] = NA_SWEEP,
+    positions_um: tuple[float, ...] | None = None,
 ) -> list[tuple[float, np.ndarray, np.ndarray]]:
-    """Measure the gated beam-width profile at each swept illumination NA.
+    """Measure the ASLM system-PSF axial FWHM at each swept illumination NA.
 
-    Returns a list of `(na, centered_um, widths_um)` triples in the
-    requested order. `centered_um` re-centres `positions_um` on the array's
-    own geometric midpoint -- `positions_um[0]` here is exactly 0.0 and
-    needs no half-voxel offset, unlike examples/light_sheet_vs_aslm.py's
-    display-coordinate formula, which carries an offset appropriate to a
-    rotated combined seed volume.
+    Returns a list of `(na, positions_um, fwhm_um)` triples in the requested
+    order, each measured through
+    `simulate.measure_aslm_system_fwhm_profile(positions_um=positions,
+    detection_na=DETECTION_NA, illumination_na=na, slit_width=SLIT_WIDTH,
+    **COMMON)` -- never the retired self-gated
+    `measure_gated_beam_width_profile`. `positions_um` defaults to the
+    module-level `FOV_POSITIONS_UM`, read at call time (not captured as a
+    default-argument value), so `examples/resolution_vs_fov_by_na.py`'s own
+    `run_sweep()` call and this module's regression tests both see the
+    current value. The returned positions are already centred on the waist
+    home (D-05/D-07), so no re-centring offset applies here, unlike the
+    retired gate's display-coordinate formula.
     """
+    if positions_um is None:
+        positions_um = FOV_POSITIONS_UM
+    positions = np.asarray(positions_um, dtype=np.float64)
     results: list[tuple[float, np.ndarray, np.ndarray]] = []
     for na in nas:
-        positions_um, widths_um = simulate.measure_gated_beam_width_profile(
-            illumination_na=na, slit_width=SLIT_WIDTH, **COMMON
+        centered_um, fwhm_um = simulate.measure_aslm_system_fwhm_profile(
+            positions_um=positions,
+            detection_na=DETECTION_NA,
+            illumination_na=na,
+            slit_width=SLIT_WIDTH,
+            **COMMON,
         )
-        centered_um = positions_um - positions_um[-1] / 2.0
-        results.append((na, centered_um, widths_um))
+        results.append((na, centered_um, fwhm_um))
     return results
 
 
 def print_table(results: list[tuple[float, np.ndarray, np.ndarray]]) -> None:
-    """Print one diagnostic row per swept NA: finite count, min/max width, max/min ratio.
+    """Print one diagnostic row per swept NA: finite count, min/max, max/min ratio.
 
     Statistics are computed with `np.nanmin`/`np.nanmax`/`np.isfinite(...).sum()`
     so the legitimately unmeasurable NaN positions are excluded from the
@@ -124,12 +152,13 @@ def print_table(results: list[tuple[float, np.ndarray, np.ndarray]]) -> None:
 
     This table is a diagnostic summary only: the position-resolved figure
     below is the deliverable, and the max/min ratio column here does not
-    replace it -- no Rayleigh-range annotation applies to ASLM (D-03).
+    replace it -- the D-07 flatness claim is what this ratio approximates
+    for a quick read, not a substitute for the figure.
     """
-    half_extent = (COMMON["psf_size_z"] - 1) * COMMON["dz"] / 2.0
+    half_extent = max(abs(v) for v in FOV_POSITIONS_UM)
     print(
         f"illumination NA sweep -- slit_width={SLIT_WIDTH:.2f} um, "
-        f"detection_na={DETECTION_NA:.2f}, window=+-{half_extent:.1f} um"
+        f"detection_na={DETECTION_NA:.2f}, FOV=+-{half_extent:.1f} um"
     )
     print(
         f"{'na':>6}  {'finite/total':>14}  {'min width (um)':>16}  "
@@ -164,22 +193,19 @@ def print_table(results: list[tuple[float, np.ndarray, np.ndarray]]) -> None:
 def build_sweep_figure(
     results: list[tuple[float, np.ndarray, np.ndarray]],
 ) -> plt.Figure | None:
-    """Overlay one measured ASLM axial-resolution-vs-position curve per swept NA.
+    """Overlay one measured ASLM system-PSF axial FWHM curve per swept NA.
 
     Returns None when no result holds any finite width -- the caller must
     handle that return rather than assume a Figure. An individual NA whose
     `widths_um` is entirely NaN is skipped (no invisible line, no misleading
     legend entry for a curve with nothing to show), but every other NA's
     curve is kept and plotted exactly as measured, NaN entries included:
-    matplotlib renders NaN as a break in the line, which is the honest
-    rendering of the far-field positions where the profile never drops to
-    half maximum. Roughly 30-40 percent of this window is legitimately
-    unmeasurable at every NA, so curves are continuous through the inner
-    region and become sparse toward the window edges -- these gaps are never
-    filled, interpolated across, clipped, or hidden by narrowing the plotted
-    x range. Any statement about how the curves behave is computed from
-    `results`, never written as fixed text (D-03: no Rayleigh-range concept
-    applies to ASLM, so no such annotation appears here either).
+    matplotlib renders NaN as a break in the line. The system-PSF
+    measurement is DOF-confined (D-09), so gaps are not expected across
+    this +-50 um FOV window -- but any NaN that does occur is still plotted
+    as an honest break, never filled, interpolated across, clipped, or
+    hidden by narrowing the plotted x range. Any statement about how the
+    curves behave is computed from `results`, never written as fixed text.
     """
     plottable = [
         (na, centered_um, widths_um)
@@ -194,14 +220,14 @@ def build_sweep_figure(
     for na, centered_um, widths_um in plottable:
         ax.plot(centered_um, widths_um, label=f"illumination_na={na:.2f}")
     ax.set_xlabel("position along beam propagation axis (um)")
-    ax.set_ylabel("illumination-limited axial resolution, transverse FWHM (um)")
+    ax.set_ylabel("system-PSF axial FWHM (um)")
     ax.legend()
-    half_extent = (COMMON["psf_size_z"] - 1) * COMMON["dz"] / 2.0
+    half_extent = max(abs(v) for v in FOV_POSITIONS_UM)
     ax.set_xlim(-half_extent, half_extent)
     ax.set_title(
-        "ASLM axial resolution vs. position across the fixed window\n"
+        "ASLM system-PSF axial FWHM vs. FOV position\n"
         f"detection_na={DETECTION_NA:.2f}, slit_width={SLIT_WIDTH:.2f} um, "
-        f"window=+-{half_extent:.1f} um"
+        f"FOV=+-{half_extent:.1f} um"
     )
     fig.tight_layout()
     return fig
