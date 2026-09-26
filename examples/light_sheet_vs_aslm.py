@@ -102,17 +102,92 @@ def axial_profile(seed: np.ndarray) -> np.ndarray:
     return seed[:, peak_y, peak_x].astype(np.float64)
 
 
+def lateral_fwhm(psf: np.ndarray, dxy: float) -> float:
+    """Return the lateral (X) half-max width of a (Z, Y, X) PSF seed through its true peak.
+
+    Locates the global peak the same way `axial_profile` does -- via
+    `np.unravel_index(np.argmax(...))`, never a per-slice search, since a
+    per-slice argmax drifts onto sidelobes far from focus. Walks outward
+    along X from that peak row and linearly interpolates the half-maximum
+    crossing on each side, using the identical first-crossing interpolation
+    as `slit_width_sweep.py`'s `axial_fwhm` (duplicated here per the
+    single-file PEP 723 philosophy -- no shared helper module between the
+    two scripts). Raises ValueError, rather than returning a sentinel, when
+    the peak is non-positive or a crossing is not found within the volume --
+    `main()` needs a definite float to build the D-14 core radius from.
+    """
+    peak_z, peak_y, peak_x = np.unravel_index(np.argmax(psf), psf.shape)
+    profile = psf[peak_z, peak_y, :].astype(np.float64)
+    peak_value = profile[peak_x]
+    if peak_value <= 0:
+        raise ValueError("lateral_fwhm: peak value is not positive, cannot measure half-max width")
+    half_max = peak_value / 2.0
+
+    def _crossing(indices: np.ndarray) -> float | None:
+        values = profile[indices]
+        below = np.where(values < half_max)[0]
+        if below.size == 0:
+            return None
+        edge = below[0]
+        if edge == 0:
+            return None
+        i0, i1 = indices[edge - 1], indices[edge]
+        v0, v1 = profile[i0], profile[i1]
+        frac = (half_max - v0) / (v1 - v0)
+        return i0 + frac * (i1 - i0)
+
+    left_indices = np.arange(peak_x, -1, -1)  # peak -> start, descending
+    right_indices = np.arange(peak_x, profile.size)  # peak -> end, ascending
+
+    left_crossing = _crossing(left_indices)
+    right_crossing = _crossing(right_indices)
+    if left_crossing is None or right_crossing is None:
+        raise ValueError("lateral_fwhm: half-max crossing not found within the volume")
+    return (right_crossing - left_crossing) * dxy
+
+
+def outside_core_fraction(seed: np.ndarray, r_core_um: float, dxy: float) -> np.ndarray:
+    """Per Z plane, the lateral energy fraction outside a fixed detection-core disc.
+
+    The core is a disc of radius `r_core_um` centred on the seed's GLOBAL
+    peak lateral position (`np.unravel_index(np.argmax(seed), seed.shape)`)
+    -- fixed for every plane, never re-located per slice, matching
+    `axial_profile`'s fixed-peak convention. Mirrors the D-14 committed
+    test's metric (`tests/test_seeds.py::
+    test_aslm_removes_out_of_focus_energy_at_every_z_beyond_dof`):
+    `1 - E_core / E_plane` per Z. A plane carrying zero total energy maps to
+    0.0 (there is no out-of-focus energy to report there), rather than the
+    test's own convention of 1.0 -- this panel's purpose is showing where
+    energy is lost, not flagging degenerate planes.
+    """
+    _, peak_y, peak_x = np.unravel_index(np.argmax(seed), seed.shape)
+    yy, xx = np.meshgrid(
+        np.arange(seed.shape[1]), np.arange(seed.shape[2]), indexing="ij"
+    )
+    core_mask = np.hypot((yy - peak_y) * dxy, (xx - peak_x) * dxy) <= r_core_um
+    e_plane = seed.sum(axis=(1, 2), dtype=np.float64)
+    e_core = (seed * core_mask[None, :, :]).sum(axis=(1, 2), dtype=np.float64)
+    fraction_out = np.zeros_like(e_plane)
+    positive = e_plane > 0
+    fraction_out[positive] = 1.0 - (e_core[positive] / e_plane[positive])
+    return fraction_out
+
+
 def build_comparison_figure(
     seed_light_sheet: np.ndarray,
     seed_aslm: np.ndarray,
     common: dict,
     slit_width: float,
+    *,
+    r_core_um: float,
 ) -> plt.Figure:
-    """Assemble the D-04 comparison figure: XZ and YZ MIP panels for both modes.
+    """Assemble the D-04/D-14 comparison figure: MIP panels, axial profile, and outside-core panel.
 
     Every panel is plotted in physical micrometres (derived from `dz`/`dxy`),
     centered on zero, with a shared per-row intensity scale so the two modes
-    are directly, honestly comparable.
+    are directly, honestly comparable. `r_core_um` sets the fixed detection-
+    core radius for the bottom D-14 outside-core-fraction panel (see
+    `outside_core_fraction`).
     """
     dz = common["dz"]
     dxy = common["dxy"]
@@ -142,18 +217,21 @@ def build_comparison_figure(
     xz_vmax = float(max(xz_light_sheet.max(), xz_aslm.max()))
     yz_vmax = float(max(yz_light_sheet.max(), yz_aslm.max()))
     # Per 04-02: a linear scale makes light_sheet and aslm visually
-    # indistinguishable for these locked D-07 parameters -- the gate's effect
-    # lives in low-intensity off-waist structure ~3 orders of magnitude below
-    # peak. Log scale, shared per row across both modes, makes it visible.
+    # indistinguishable for these locked D-07 parameters. D-19: the
+    # sweep-integrated slit removes low-intensity off-waist energy across
+    # the whole PSF (D-14), not only its axial tail, and that removal lives
+    # mostly in structure ~3 orders of magnitude below peak. Log scale,
+    # shared per row across both modes, makes it visible.
     xz_norm = LogNorm(vmin=xz_vmax * 1e-3, vmax=xz_vmax)
     yz_norm = LogNorm(vmin=yz_vmax * 1e-3, vmax=yz_vmax)
 
     # constrained_layout (not tight_layout): tight_layout does not account for
     # the per-row colorbars added below and produces overlapping panels/text.
-    # 3-row gridspec: rows 0-1 are the 2x2 MIP grid, row 2 spans both columns
-    # for the axial intensity-profile overlay added below.
-    fig = plt.figure(figsize=(11, 14), constrained_layout=True)
-    gs = fig.add_gridspec(3, 2, height_ratios=[1, 1, 0.8])
+    # 4-row gridspec: rows 0-1 are the 2x2 MIP grid, row 2 spans both columns
+    # for the axial intensity-profile overlay, row 3 spans both columns for
+    # the D-14 outside-core-fraction panel added below.
+    fig = plt.figure(figsize=(11, 17), constrained_layout=True)
+    gs = fig.add_gridspec(4, 2, height_ratios=[1, 1, 0.8, 0.8])
     axes = np.array(
         [
             [fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[0, 1])],
@@ -166,7 +244,6 @@ def build_comparison_figure(
         (axes[1, 0], axes[1, 1], yz_light_sheet, yz_aslm, yz_extent, yz_norm, "YZ", "Y"),
     )
 
-    half_width = slit_width / 2.0
     for ax_ls, ax_al, panel_ls, panel_al, extent, norm, proj_label, lateral_label in row_specs:
         # aspect="equal" (not "auto"): dz/dxy ~= 2.78, so a square-aspect,
         # index-based panel would visually stretch the axial direction by
@@ -175,7 +252,21 @@ def build_comparison_figure(
         ax_ls.imshow(panel_ls, aspect="equal", norm=norm, extent=extent)
         ax_ls.set_title(f"light_sheet {proj_label} MIP")
         im_al = ax_al.imshow(panel_al, aspect="equal", norm=norm, extent=extent)
-        ax_al.set_title(f"aslm {proj_label} MIP")
+        # D-19: the slit integrates along the pre-rotation beam-propagation
+        # axis (D-02) for every direction -- there is no fixed camera-axis
+        # band to draw here (the retired D-15/D-19 Z-band footprint gate is
+        # gone). The slit note lives in the title (not an image overlay):
+        # aspect="equal" shrinks the rendered image box within the subplot
+        # to keep physical units equal, by an amount that differs slightly
+        # per row, so an in-image text anchor can land outside the
+        # actually-rendered (and clipped) box in one row but not the other.
+        # A title is never clipped to that box.
+        ax_al.set_title(
+            f"aslm {proj_label} MIP\n"
+            f"slit_width={slit_width:.2f} um, integrated along propagation "
+            "(X at this direction)",
+            fontsize=9,
+        )
 
         for ax in (ax_ls, ax_al):
             ax.set_xlabel(f"{lateral_label} (um)")
@@ -183,24 +274,6 @@ def build_comparison_figure(
 
         cbar = fig.colorbar(im_al, ax=[ax_ls, ax_al], shrink=0.85, pad=0.02)
         cbar.set_label("normalised intensity (fraction of total energy)")
-
-        # Slit-gate footprint annotation, aslm panel only. The gate is
-        # applied to axis 2 (X) in the illumination's *pre-rotation* frame;
-        # at the default direction (polar_deg=90.0, azimuthal_deg=0.0) the
-        # illumination is then rotated into the Z/X plane, so in the saved
-        # seed the narrowing appears along Z -- the vertical axis shared by
-        # both the XZ and YZ panels here.
-        for z_val in (-half_width, half_width):
-            ax_al.axhline(z_val, color="white", linestyle="--", linewidth=1.0)
-        ax_al.text(
-            extent[0] * 0.9,
-            -half_width,
-            f"slit_width={slit_width:.2f} um",
-            color="white",
-            fontsize=8,
-            ha="left",
-            va="bottom",
-        )
 
     # Axial intensity-profile overlay: makes the gate's effect readable
     # without the reader computing anything (D-04 <specifics>). Z coordinate
@@ -246,6 +319,31 @@ def build_comparison_figure(
     ax_profile.set_xlim(visible_z.min() - margin, visible_z.max() + margin)
     ax_profile.legend()
 
+    # D-14 outside-core-fraction panel: makes the "energy removed at every Z"
+    # claim decidable by eye, since at these locked parameters the MIP panels
+    # above differ only subtly (planner measurement: margins -0.0006 to
+    # -0.011 across 36 tested planes). Same z_um centring as the axial
+    # profile above.
+    fraction_out_light_sheet = outside_core_fraction(seed_light_sheet, r_core_um, dxy)
+    fraction_out_aslm = outside_core_fraction(seed_aslm, r_core_um, dxy)
+
+    ax_fraction = fig.add_subplot(gs[3, :])
+    ax_fraction.plot(z_um, fraction_out_light_sheet, marker="o", markersize=3, label="light_sheet")
+    ax_fraction.plot(
+        z_um,
+        fraction_out_aslm,
+        marker="o",
+        markersize=3,
+        label=f"aslm (slit_width={slit_width:.2f} um)",
+    )
+    ax_fraction.set_xlabel("Z (um)")
+    ax_fraction.set_ylabel("fraction of plane energy outside core")
+    ax_fraction.set_title(
+        f"Lateral energy fraction outside the detection core (r={r_core_um:.4f} um) vs Z"
+    )
+    ax_fraction.set_xlim(visible_z.min() - margin, visible_z.max() + margin)
+    ax_fraction.legend()
+
     fig.suptitle(
         f"light_sheet vs aslm PSF seed comparison (aslm slit_width={slit_width:.2f} um)"
     )
@@ -258,19 +356,28 @@ def main() -> None:
 
     seed_light_sheet = generate_psf_seed(psf_mode="light_sheet", **COMMON)
     seed_aslm = generate_psf_seed(psf_mode="aslm", slit_width=SLIT_WIDTH, **COMMON)
+    # D-14: seed_single supplies the fixed core radius (via lateral_fwhm)
+    # that the committed D-14 test also uses -- the core is defined from the
+    # unslit detection-only PSF, not from either compared mode.
+    seed_single = generate_psf_seed(psf_mode="single", **COMMON)
+    dxy = COMMON["dxy"]
+    r_core_um = lateral_fwhm(seed_single, dxy)
 
-    # The slit window integrates along the beam propagation direction for
-    # any direction (D-02) -- there is no per-axis gate resolution anymore.
-    gate_axis = 2
-    full_extent = COMMON["psf_size_xy"] * COMMON["dxy"]
+    # D-19: the slit integrates along the pre-rotation propagation axis
+    # (D-02) for every direction -- there is no per-axis gate resolution
+    # anymore, and no full-extent equivalence shortcut (D-15).
+    propagation_window_um = COMMON["psf_size_z"] * COMMON["dz"]
     summarise_mode("light_sheet", seed_light_sheet, "none")
     summarise_mode(
         "aslm",
         seed_aslm,
-        f"slit_width={SLIT_WIDTH}um axis={gate_axis}(X) extent={full_extent:.3f}um",
+        f"slit_width={SLIT_WIDTH}um sweep-integrated along propagation, "
+        f"window={propagation_window_um:.3f}um",
     )
 
-    fig = build_comparison_figure(seed_light_sheet, seed_aslm, COMMON, SLIT_WIDTH)
+    fig = build_comparison_figure(
+        seed_light_sheet, seed_aslm, COMMON, SLIT_WIDTH, r_core_um=r_core_um
+    )
 
     output_dir = Path(__file__).resolve().parent / "output"
     output_dir.mkdir(parents=True, exist_ok=True)

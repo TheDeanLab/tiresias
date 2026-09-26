@@ -72,20 +72,22 @@ COMMON = {
     "azimuthal_deg": 0.0,
 }
 
-# The full extent of the pre-rotation gate axis. Computed from COMMON, never
-# hardcoded, so the two stay in lockstep if a demo parameter is ever edited.
-# At the default direction (polar_deg=90.0, azimuthal_deg=0.0) the gate axis
-# resolves to axis 2 (X), whose pixel pitch is dxy -- axis 0 would use dz
-# instead. At
-# slit_width == FULL_EXTENT, _gaussian_slit_window (seeds.py:213-222) returns
-# None and the gate is skipped entirely, so the aslm seed is bit-identical to
-# the light_sheet seed (ASLM-05).
-FULL_EXTENT = COMMON["psf_size_xy"] * COMMON["dxy"]  # 13.824 um
+# The slit window integrates along the pre-rotation propagation axis,
+# sampled at dz (D-02, D-17). PROPAGATION_EXTENT is the full simulated
+# propagation window -- a slit at least this wide averages over essentially
+# the whole simulated sweep. It no longer reduces to light_sheet (D-15).
+PROPAGATION_EXTENT = COMMON["psf_size_z"] * COMMON["dz"]  # 18.3 um
 
-# D-08: 7 points, roughly log-spaced with a factor-of-two ladder, from a
-# small physically-meaningful width up to FULL_EXTENT (the ASLM-05
-# equivalence anchor) as the final, deliberately exact element.
-SLIT_WIDTHS: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0, FULL_EXTENT)
+# D-13/D-18: 7 points, from a sub-dz width (below one dz==0.3um sample,
+# exercising the D-18 waist-limited fallback) up through the full
+# propagation extent.
+SLIT_WIDTHS: tuple[float, ...] = (0.1, 0.5, 1.0, 2.0, 4.0, 8.0, PROPAGATION_EXTENT)
+
+# D-15/D-13: effectively uniform across the whole propagation window, far
+# beyond any physical slit -- gives the swept-average sheet reference, the
+# wide-slit limit a very wide slit converges to. Replaces the old exact
+# light_sheet equivalence anchor (D-15 retires that shortcut).
+SWEPT_AVERAGE_SLIT_WIDTH = 1.0e6
 
 
 def axial_fwhm(psf: np.ndarray, dz: float) -> float | None:
@@ -141,15 +143,18 @@ def run_sweep(widths: tuple[float, ...] = SLIT_WIDTHS) -> list[tuple[float, floa
     single ordered source both print_table and build_sweep_figure consume,
     so neither re-derives or re-sorts it.
 
-    A slit_width the library rejects (ASLM-06: non-positive, or too narrow to
-    capture positive illumination energy) raises ValueError from
-    generate_psf_seed. That is caught here specifically -- not via a bare
-    except, since ValueError is the library's own contract for exactly those
-    two cases and anything broader would hide a real defect -- the point is
-    recorded as None and the sweep continues with the remaining points. A
-    point whose axial_fwhm comes back None (the profile never dropped to half
-    maximum inside the volume) is likewise recorded as None. Either way the
-    point keeps its ordered slot in the returned list -- it is never dropped.
+    A slit_width the library rejects raises ValueError from
+    generate_psf_seed -- only for a non-positive width, or when the
+    slit-integrated illumination has no positive finite energy (D-18); the
+    old too-narrow-slit error is gone, replaced by the D-18 waist-limited
+    fallback (below one dz sample, no convolution runs at all). That
+    ValueError is caught here specifically -- not via a bare except, since it
+    is the library's own contract for exactly those cases and anything
+    broader would hide a real defect -- the point is recorded as None and the
+    sweep continues with the remaining points. A point whose axial_fwhm comes
+    back None (the profile never dropped to half maximum inside the volume)
+    is likewise recorded as None. Either way the point keeps its ordered slot
+    in the returned list -- it is never dropped.
     """
     results: list[tuple[float, float | None]] = []
     for width in widths:
@@ -169,8 +174,12 @@ def run_sweep(widths: tuple[float, ...] = SLIT_WIDTHS) -> list[tuple[float, floa
     return results
 
 
-def print_table(results: list[tuple[float, float | None]], reference_fwhm: float) -> None:
-    """Print the D-06 slit_width/FWHM table, in the same order run_sweep() returned.
+def print_table(
+    results: list[tuple[float, float | None]],
+    waist_limited_fwhm: float,
+    swept_average_fwhm: float,
+) -> None:
+    """Print the D-13 slit_width/FWHM table, in the same order run_sweep() returned.
 
     Rows are printed exactly as run_sweep() returns them, with no sorting
     step that could reorder equal or near-equal points or introduce
@@ -178,8 +187,11 @@ def print_table(results: list[tuple[float, float | None]], reference_fwhm: float
     -- renders as an explicit "SKIPPED" marker, never as a number and never
     omitted; the run_sweep() log above already named the offending width and
     reproduced the library's own reason. An empty result list still prints
-    the header and reference line rather than raising -- there is no row
-    index to look up on an empty sequence.
+    the header and reference lines rather than raising -- there is no row
+    index to look up on an empty sequence. Both measured reference limits
+    (D-13/D-15/D-18) are printed after the sweep rows: the waist-limited
+    (light_sheet) value the narrow end approaches, and the swept-average
+    sheet value the wide end approaches.
     """
     print(f"{'slit_width (um)':>16}  {'axial FWHM (um)':>16}  note")
     if not results:
@@ -190,20 +202,32 @@ def print_table(results: list[tuple[float, float | None]], reference_fwhm: float
             if fwhm is None:
                 fwhm_str = f"{'SKIPPED':>16}"
                 note = "<- skipped: rejected slit_width or unmeasurable FWHM, see log above"
+            elif index == 0:
+                fwhm_str = f"{fwhm:>16.4f}"
+                note = "<- sub-dz slit: waist-limited, no convolution (D-18)"
+            elif index == last_index:
+                fwhm_str = f"{fwhm:>16.4f}"
+                note = "<- slit spans the whole propagation window"
             else:
                 fwhm_str = f"{fwhm:>16.4f}"
-                note = "<- full-extent / light_sheet-equivalent anchor" if index == last_index else ""
+                note = ""
             print(f"{width:>16.4f}  {fwhm_str}  {note}")
     print(
-        f"{'light_sheet reference':>16}  {reference_fwhm:>16.4f}  "
-        "(plain light_sheet, no slit gate)"
+        f"{'waist-limited (light_sheet)':>16}  {waist_limited_fwhm:>16.4f}  "
+        "(narrow-slit reference, D-18)"
+    )
+    print(
+        f"{'swept-average sheet':>16}  {swept_average_fwhm:>16.4f}  "
+        "(wide-slit reference, D-13/D-15)"
     )
 
 
 def build_sweep_figure(
-    results: list[tuple[float, float | None]], reference_fwhm: float
+    results: list[tuple[float, float | None]],
+    waist_limited_fwhm: float,
+    swept_average_fwhm: float,
 ) -> plt.Figure | None:
-    """Plot measured axial FWHM against slit_width, with a light_sheet reference line.
+    """Plot measured axial FWHM against slit_width, with the two D-13 reference lines.
 
     Only measured (non-None) points are plotted -- a skipped point is never
     rendered as data. Returns None, rather than raising from unpacking an
@@ -211,9 +235,9 @@ def build_sweep_figure(
     must handle that return instead of assuming a Figure.
 
     Title and narrative are derived from what this run actually produced --
-    the tradeoff direction is read off the computed first/last measured FWHM
-    values, never asserted from a prior expectation (see this plan's
-    must_haves.prohibitions).
+    the tradeoff direction and the monotonicity claim are both read off the
+    computed measured FWHM values, never asserted from a prior expectation
+    (see this plan's must_haves.prohibitions / threat T-08.1-14).
     """
     measured = [(width, fwhm) for width, fwhm in results if fwhm is not None]
     if not measured:
@@ -226,10 +250,16 @@ def build_sweep_figure(
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.plot(widths, fwhms, marker="o", linestyle="-", label="measured axial FWHM")
     ax.axhline(
-        reference_fwhm,
+        waist_limited_fwhm,
         color="gray",
         linestyle="--",
-        label=f"light_sheet reference ({reference_fwhm:.4f} um)",
+        label=f"waist-limited (light_sheet) reference ({waist_limited_fwhm:.4f} um)",
+    )
+    ax.axhline(
+        swept_average_fwhm,
+        color="tab:red",
+        linestyle=":",
+        label=f"swept-average sheet reference ({swept_average_fwhm:.4f} um)",
     )
     ax.set_xlabel("slit_width (um)")
     ax.set_ylabel("axial FWHM (um)")
@@ -243,9 +273,18 @@ def build_sweep_figure(
         direction = "narrows (axial resolution improves) as slit_width increases"
     else:
         direction = "stays constant across the sweep"
+
+    # D-13: monotonic non-decreasing trend, computed from the measured
+    # sequence with a small tolerance for float round-off -- never asserted.
+    monotonic = all(
+        fwhms[i + 1] >= fwhms[i] - 1e-6 for i in range(len(fwhms) - 1)
+    )
+    monotonic_str = "yes" if monotonic else "no"
+
     ax.set_title(
         "ASLM axial FWHM vs slit_width\n"
         f"Measured: FWHM {direction}\n"
+        f"monotonic non-decreasing: {monotonic_str}\n"
         f"({first_fwhm:.4f} um at slit_width={first_width:.2f} um -> "
         f"{last_fwhm:.4f} um at slit_width={last_width:.2f} um)"
     )
@@ -254,14 +293,23 @@ def build_sweep_figure(
 
 
 def main() -> None:
-    """Measure the light_sheet reference, run the sweep, print the table, and save the plot."""
-    reference_seed = generate_psf_seed(psf_mode="light_sheet", **COMMON)
-    reference_fwhm = axial_fwhm(reference_seed, COMMON["dz"])
-    if reference_fwhm is None:
+    """Measure the two D-13 reference limits, run the sweep, print the table, and save the plot."""
+    waist_limited_seed = generate_psf_seed(psf_mode="light_sheet", **COMMON)
+    waist_limited_fwhm = axial_fwhm(waist_limited_seed, COMMON["dz"])
+    if waist_limited_fwhm is None:
         raise RuntimeError("light_sheet reference seed produced no measurable axial FWHM")
 
+    # D-13/D-15: the wide-slit limit, measured through the production aslm
+    # path at an effectively uniform slit_width rather than asserted.
+    swept_average_seed = generate_psf_seed(
+        psf_mode="aslm", slit_width=SWEPT_AVERAGE_SLIT_WIDTH, **COMMON
+    )
+    swept_average_fwhm = axial_fwhm(swept_average_seed, COMMON["dz"])
+    if swept_average_fwhm is None:
+        raise RuntimeError("swept-average aslm seed produced no measurable axial FWHM")
+
     results = run_sweep()
-    print_table(results, reference_fwhm)
+    print_table(results, waist_limited_fwhm, swept_average_fwhm)
 
     if all(fwhm is None for _, fwhm in results):
         # Degenerate-sweep guard: every point was rejected or unmeasurable.
@@ -272,31 +320,57 @@ def main() -> None:
         print("no sweep point produced a measurable FWHM -- nothing to plot or save")
         raise SystemExit(1)
 
-    # ASLM-05 anchor check: at slit_width == FULL_EXTENT the gate is skipped
-    # entirely (seeds.py::_gaussian_slit_window returns None), so the aslm
-    # seed is bit-identical to the light_sheet seed and their FWHMs must be
-    # exactly equal -- not merely close. An approximate comparison here would
-    # hide a real regression in the gate-skip path, so this never raises on
-    # mismatch: it prints the discrepancy and continues so the reader still
-    # gets the table and plot.
-    _anchor_width, anchor_fwhm = results[-1]
-    if anchor_fwhm is None:
+    # D-18 narrow anchor: the first sweep point (SLIT_WIDTHS[0], below one dz
+    # sample) applies no convolution at all, so its FWHM must exactly equal
+    # the waist-limited (light_sheet) reference -- not merely close. An
+    # approximate comparison here would hide a real regression in the D-18
+    # fallback path, so this never raises on mismatch: it prints the
+    # discrepancy and continues so the reader still gets the table and plot.
+    _narrow_width, narrow_fwhm = results[0]
+    if narrow_fwhm is None:
         print(
-            "anchor check skipped: the full-extent slit_width point itself "
+            "narrow anchor skipped: the sub-dz slit_width point itself "
             "was skipped, see log above -- no aslm FWHM to compare"
         )
-    elif anchor_fwhm == reference_fwhm:
+    elif narrow_fwhm == waist_limited_fwhm:
         print(
-            f"anchor check: full-extent aslm FWHM ({anchor_fwhm:.4f} um) "
-            f"matches light_sheet reference ({reference_fwhm:.4f} um) -- exact match"
+            f"narrow anchor: exact match (sub-dz aslm FWHM {narrow_fwhm:.4f} um "
+            f"== waist-limited reference {waist_limited_fwhm:.4f} um)"
         )
     else:
         print(
-            f"anchor check: full-extent aslm FWHM ({anchor_fwhm!r} um) "
-            f"does NOT match light_sheet reference ({reference_fwhm!r} um) -- mismatch"
+            f"narrow anchor: mismatch (sub-dz aslm FWHM {narrow_fwhm!r} um "
+            f"!= waist-limited reference {waist_limited_fwhm!r} um)"
         )
 
-    fig = build_sweep_figure(results, reference_fwhm)
+    # D-13 wide-limit report: how close the widest simulated slit_width comes
+    # to the true swept-average limit (SWEPT_AVERAGE_SLIT_WIDTH), reported
+    # as a plain measured difference rather than asserted equality.
+    _wide_width, wide_fwhm = results[-1]
+    if wide_fwhm is None:
+        print(
+            "wide-limit report skipped: the widest slit_width point itself "
+            "was skipped, see log above -- no aslm FWHM to compare"
+        )
+    else:
+        wide_diff = abs(wide_fwhm - swept_average_fwhm)
+        print(
+            f"wide-limit report: widest simulated aslm FWHM ({wide_fwhm:.4f} um) "
+            f"differs from the swept-average reference ({swept_average_fwhm:.4f} um) "
+            f"by {wide_diff:.4f} um"
+        )
+
+    # D-13 trend line: monotonic non-decreasing, computed from the measured
+    # sequence (skipping None entries) with a small float-round-off
+    # tolerance -- never asserted from a prior expectation.
+    measured_fwhms = [fwhm for _, fwhm in results if fwhm is not None]
+    monotonic = all(
+        measured_fwhms[i + 1] >= measured_fwhms[i] - 1e-6
+        for i in range(len(measured_fwhms) - 1)
+    )
+    print(f"monotonic non-decreasing: {'yes' if monotonic else 'no'}")
+
+    fig = build_sweep_figure(results, waist_limited_fwhm, swept_average_fwhm)
     if fig is None:
         # Unreachable given the all-None guard above (at least one point is
         # measurable at this point), but never assume a Figure without
