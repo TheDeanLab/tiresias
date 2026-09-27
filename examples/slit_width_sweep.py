@@ -47,7 +47,28 @@ from tiresias import generate_psf_seed
 # aperture entries below, which are deliberately raised for this demo and no
 # longer track the docs (identical to examples/light_sheet_vs_aslm.py's
 # COMMON; duplicated here per the single-file PEP 723 philosophy -- no shared
-# helper module between the two scripts).
+# helper module between the two scripts. Plan 08.1-13's audit test pins the
+# two COMMONs equal).
+#
+# Halt route steps 1-2 (research Q3/Q5): three values corrected from the
+# pre-08.1-10 sweep, which was measured on anisotropic (dz=0.3) sampling
+# through the legacy rot90 relabel and an ni0=None aberration -- producing a
+# spurious non-monotonic trend (08.1-06 open item OPEN-06a) that research Q3
+# identifies as a bug signal, not physics, since axial FWHM vs ASLM slit
+# width must be monotonic non-decreasing:
+#   - "dz" == "dxy": the legacy cardinal-direction rotation path
+#     (`_legacy_rot90_rotation`) relabels pre-rotation axes onto the display
+#     axes with no resampling. That relabel is exact only for cubic voxels
+#     (halt finding 1, ROT-04) -- the seeds.py fix for anisotropic sampling
+#     is deferred (deferred-items.md DEF-SEEDS-1).
+#   - "psf_size_z" == "psf_size_xy" (a cube window): after the relabel,
+#     pre-rotation axis 0 (the "psf_size_z" samples) lands on the display X
+#     axis. An equal size fills X edge-to-edge with no zero-padded white
+#     bands. The odd size (129) puts the focal plane exactly on a sample,
+#     rather than between two samples at a half-integer centre.
+#   - "ni0" == "ni" (1.33): "ni0=None" falls back to psfmodels' own default
+#     design immersion index (1.515, oil), producing a spherical-aberration
+#     focal shift in this water-immersion demo (halt finding 2).
 COMMON = {
     "na": 1.0,
     "detection_na": 1.1,
@@ -55,7 +76,7 @@ COMMON = {
     "wavelength": 0.561,
     "ni": 1.33,
     "ns": 1.33,
-    "ni0": None,
+    "ni0": 1.33,
     "tg": None,
     "tg0": None,
     "ng": None,
@@ -64,9 +85,9 @@ COMMON = {
     "oversample_factor": 3,
     "psf_model": "vectorial",
     "dxy": 0.108,
-    "dz": 0.300,
-    "psf_size_z": 61,
-    "psf_size_xy": 128,
+    "dz": 0.108,
+    "psf_size_z": 129,
+    "psf_size_xy": 129,
     "background": 0.0,
     "polar_deg": 90.0,
     "azimuthal_deg": 0.0,
@@ -76,9 +97,9 @@ COMMON = {
 # sampled at dz (D-02, D-17). PROPAGATION_EXTENT is the full simulated
 # propagation window -- a slit at least this wide averages over essentially
 # the whole simulated sweep. It no longer reduces to light_sheet (D-15).
-PROPAGATION_EXTENT = COMMON["psf_size_z"] * COMMON["dz"]  # 18.3 um
+PROPAGATION_EXTENT = COMMON["psf_size_z"] * COMMON["dz"]  # 13.932 um
 
-# D-13/D-18: 7 points, from a sub-dz width (below one dz==0.3um sample,
+# D-13/D-18: 7 points, from a sub-dz width (below one dz==0.108um sample,
 # exercising the D-18 waist-limited fallback) up through the full
 # propagation extent.
 SLIT_WIDTHS: tuple[float, ...] = (0.1, 0.5, 1.0, 2.0, 4.0, 8.0, PROPAGATION_EXTENT)
@@ -88,6 +109,59 @@ SLIT_WIDTHS: tuple[float, ...] = (0.1, 0.5, 1.0, 2.0, 4.0, 8.0, PROPAGATION_EXTE
 # wide-slit limit a very wide slit converges to. Replaces the old exact
 # light_sheet equivalence anchor (D-15 retires that shortcut).
 SWEPT_AVERAGE_SLIT_WIDTH = 1.0e6
+
+# D-19 disclosure (research Q1, deferred-items.md DEF-SEEDS-2): psfmodels'
+# illumination arm is a 3-D pencil beam, not integrated over the transverse
+# (Y) axis the way a true light sheet / DSLM / ASLM sweep physically is.
+# Identical content to examples/light_sheet_vs_aslm.py's PENCIL_BEAM_NOTE,
+# duplicated here per the single-file PEP 723 philosophy.
+PENCIL_BEAM_NOTE = (
+    "Residual (deferred): illumination is a 3-D pencil beam, not a "
+    "y-integrated light sheet; lateral (Y) widths are optimistic and "
+    "off-waist light_sheet profiles carry pencil-beam Fresnel structure."
+)
+
+# D-19 disclosure (research Q5): the sampling invariants this script enforces
+# (_require_simulation_sampling).
+SAMPLING_NOTE = "Sampling: cubic voxels (dz == dxy), ni0 == ni."
+
+# D-03/D-19 disclosure (research Q2): the Gaussian-vs-Dean slit mapping, so a
+# reader can trace slit_width back to Dean et al. 2015's rectangular
+# convention without re-deriving it. A Gaussian window with the same second
+# moment as Dean's rectangular W has sigma = W/sqrt(12) ~= 0.289*W, whose
+# FWHM (2*sqrt(2*ln(2))*sigma) is ~0.68*W.
+SLIT_MAPPING_NOTE = (
+    "slit_width is the FWHM of a Gaussian window (D-03); Dean et al. 2015 "
+    "used a rectangular slit W = 2*xR, and a Gaussian with the same second "
+    "moment has FWHM ~0.68*W."
+)
+
+
+def _require_simulation_sampling(common: dict) -> None:
+    """Reject anisotropic sampling or a mismatched immersion index before simulating.
+
+    The legacy cardinal-direction rotation path (`_legacy_rot90_rotation`) is
+    an exact pre-rotation-axis relabel only for cubic voxels (halt finding 1,
+    ROT-04); a mismatched `ni0` reintroduces the spherical-aberration focal
+    shift documented as halt finding 2. Mirrors
+    examples/light_sheet_vs_aslm.py's guard of the same name (plan 08.1-09) --
+    duplicated here per the single-file PEP 723 philosophy.
+    """
+    dz = common["dz"]
+    dxy = common["dxy"]
+    if dz != dxy:
+        raise ValueError(
+            f"_require_simulation_sampling: dz ({dz}) != dxy ({dxy}); the legacy rot90 "
+            "rotation path is an exact axis relabel only for cubic voxels (halt finding 1)"
+        )
+    ni0 = common["ni0"]
+    ni = common["ni"]
+    if ni0 != ni:
+        raise ValueError(
+            f"_require_simulation_sampling: ni0 ({ni0}) != ni ({ni}); a mismatched ni0 "
+            "reintroduces spherical aberration via psfmodels' own default design index "
+            "(halt finding 2)"
+        )
 
 
 def axial_fwhm(psf: np.ndarray, dz: float) -> float | None:
@@ -288,12 +362,26 @@ def build_sweep_figure(
         f"({first_fwhm:.4f} um at slit_width={first_width:.2f} um -> "
         f"{last_fwhm:.4f} um at slit_width={last_width:.2f} um)"
     )
-    fig.tight_layout()
+    # D-19: one combined footnote carrying the pencil-beam, sampling and
+    # Dean slit-mapping disclosures. rect=(0, 0.1, 1, 1) reserves the bottom
+    # 10% of the figure for it so tight_layout does not overlap the axes --
+    # the same clipping class 08.1-06/08.1-09 fixed for other in-figure text.
+    fig.text(
+        0.5,
+        0.01,
+        f"{PENCIL_BEAM_NOTE} {SAMPLING_NOTE} {SLIT_MAPPING_NOTE}",
+        ha="center",
+        va="bottom",
+        fontsize=7,
+        wrap=True,
+    )
+    fig.tight_layout(rect=(0, 0.1, 1, 1))
     return fig
 
 
 def main() -> None:
     """Measure the two D-13 reference limits, run the sweep, print the table, and save the plot."""
+    _require_simulation_sampling(COMMON)
     waist_limited_seed = generate_psf_seed(psf_mode="light_sheet", **COMMON)
     waist_limited_fwhm = axial_fwhm(waist_limited_seed, COMMON["dz"])
     if waist_limited_fwhm is None:
