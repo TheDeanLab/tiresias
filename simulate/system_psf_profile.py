@@ -80,6 +80,21 @@ def _validate_common(caller: str, values: dict) -> None:
         )
 
 
+def _require_cubic_voxels(caller: str, dxy: float, dz: float) -> None:
+    """Raise ValueError when the requested voxel grid is not cubic (dz == dxy)."""
+    # Halt finding 1 (08.1-EXECUTION-HALT.md) / DEF-SEEDS-1 / DEF-SIM-1: the
+    # legacy cardinal rotation (seeds.py::_legacy_rot90_rotation) relabels
+    # pre-rotation axes with a bare np.rot90 and no resampling, which is
+    # exact only when dz == dxy. This guard can be relaxed once the cardinal
+    # path resamples (DEF-SEEDS-1).
+    if not np.isclose(dz, dxy, rtol=1e-9, atol=0.0):
+        raise ValueError(
+            f"{caller}: dz ({dz!r}) must equal dxy ({dxy!r}) -- the legacy cardinal "
+            "rotation relabels pre-rotation axes without resampling, so anisotropic "
+            "voxels mis-scale the rotated beam (seeds.py fix deferred)"
+        )
+
+
 def _validate_positions(caller: str, positions_um) -> np.ndarray:
     """Return `positions_um` as a validated, non-empty, 1-D, finite float64 array."""
     positions = np.asarray(positions_um, dtype=np.float64)
@@ -174,6 +189,7 @@ def measure_light_sheet_system_fwhm_profile(
             "psf_size_xy": psf_size_xy,
         },
     )
+    _require_cubic_voxels("measure_light_sheet_system_fwhm_profile", dxy, dz)
     positions = _validate_positions("measure_light_sheet_system_fwhm_profile", positions_um)
     seed_kwargs = dict(
         na=detection_na,
@@ -254,6 +270,7 @@ def measure_aslm_system_fwhm_profile(
             "psf_size_xy": psf_size_xy,
         },
     )
+    _require_cubic_voxels("measure_aslm_system_fwhm_profile", dxy, dz)
     if slit_width is None or slit_width <= 0:
         raise ValueError(
             f"measure_aslm_system_fwhm_profile: slit_width must be > 0, got {slit_width!r}"
@@ -321,6 +338,7 @@ def measure_detection_dof(
             "psf_size_xy": psf_size_xy,
         },
     )
+    _require_cubic_voxels("measure_detection_dof", dxy, dz)
     seed = generate_psf_seed(
         psf_mode="single",
         na=detection_na,
@@ -370,9 +388,9 @@ def measure_sheet_thickness(
 
     A measured reference, never a closed-form formula. The width is measured
     along pre-rotation axis 2 (X) through the illumination-only PSF's global
-    peak -- the axis the legacy broadside rotation maps onto Z. This value
-    is physically comparable to the seed's Z scale only when `dz == dxy`,
-    because of the legacy `rot90` relabel (ROT-04, out of scope here).
+    peak -- the axis the legacy broadside rotation maps onto Z. Physical
+    comparability to the seed's Z scale (ROT-04) is enforced by
+    `_require_cubic_voxels`, which requires `dz == dxy`.
     """
     _validate_common(
         "measure_sheet_thickness",
@@ -387,6 +405,7 @@ def measure_sheet_thickness(
             "psf_size_xy": psf_size_xy,
         },
     )
+    _require_cubic_voxels("measure_sheet_thickness", dxy, dz)
     psf = generate_theoretical_psf(
         detection_na=illumination_na,
         illumination_na=illumination_na,

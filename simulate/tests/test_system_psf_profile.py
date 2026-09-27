@@ -17,7 +17,10 @@ from tiresias.seeds import generate_psf_seed, generate_theoretical_psf
 # D-11/D-12: locked from 08.1-REGIME-MEASUREMENTS.md (2026-09-26, measured
 # against the real sweep-integrated gate implemented by plans 08.1-01/02).
 # Do not widen or re-tune -- if a measured deviation exceeds these, STOP and
-# report rather than re-deriving a looser tolerance.
+# report rather than re-deriving a looser tolerance. The qualitative tests in
+# SystemPsfProfileHygieneTests (plan 08.1-11) are the primary D-11 contract;
+# these taus are measured regression pins for this exact grid, re-verified in
+# 08.1-REGIME-MEASUREMENTS.md's "Re-verification" section.
 TAU_THICK = 0.05
 TAU_THIN = 0.15
 
@@ -330,7 +333,10 @@ class SystemPsfProfileHygieneTests(unittest.TestCase):
         # D-11/D-12: reproduce the user's two regimes with the locked
         # tau_thick/tau_thin tolerances. If the observed deviation exceeds
         # the locked tolerance, this must fail loudly -- do not widen the
-        # tolerance to make it pass; report and stop instead.
+        # tolerance to make it pass; report and stop instead. The qualitative
+        # tests below (plan 08.1-11) are the primary D-11 contract; these
+        # taus are measured regression pins for this exact grid, re-verified
+        # in 08.1-REGIME-MEASUREMENTS.md's "Re-verification" section.
         grid = dict(
             detection_na=1.1,
             wavelength=0.561,
@@ -370,6 +376,129 @@ class SystemPsfProfileHygieneTests(unittest.TestCase):
                 f = float(fwhm[0])
                 self.assertLessEqual(abs(f - sheet_thin) / sheet_thin, TAU_THIN)
                 self.assertLess(abs(f - sheet_thin), abs(f - dof))
+
+    def test_system_fwhm_is_limited_by_the_smaller_reference_at_every_na(self):
+        # RA-7/D-11 (qualitative form, gap closure): the system FWHM never
+        # exceeds the smaller of {DOF, sheet thickness} and sits closer to it
+        # than to the larger reference, at every regime NA -- not just the
+        # two locked-tolerance endpoints test_system_psf_axial_fwhm_reproduces_both_regimes
+        # pins exactly.
+        grid = _REGIME_GRID_PARAMS
+        dof = simulate.measure_detection_dof(**grid)
+        sheet_kwargs = {k: v for k, v in grid.items() if k != "detection_na"}
+
+        for illumination_na in (0.1, 0.3, 0.4, 0.6):
+            sheet = simulate.measure_sheet_thickness(
+                illumination_na=illumination_na, **sheet_kwargs
+            )
+            smaller = min(dof, sheet)
+            larger = max(dof, sheet)
+            for mode_name, profile_fn in (
+                ("light_sheet", simulate.measure_light_sheet_system_fwhm_profile),
+                ("aslm", simulate.measure_aslm_system_fwhm_profile),
+            ):
+                extra = {"slit_width": 0.2} if mode_name == "aslm" else {}
+                with self.subTest(mode=mode_name, illumination_na=illumination_na):
+                    _positions, fwhm = profile_fn(
+                        positions_um=(0.0,),
+                        illumination_na=illumination_na,
+                        **grid,
+                        **extra,
+                    )
+                    f = float(fwhm[0])
+                    self.assertLessEqual(f, smaller + 1e-9)
+                    self.assertLess(abs(f - smaller), abs(f - larger))
+
+    def test_sheet_thickness_crosses_the_dof_once_between_the_two_regimes(self):
+        # Regime crossover (qualitative, gap closure): sheet thickness
+        # strictly decreases over the illumination NA ladder, and
+        # sheet - DOF changes sign exactly once, from positive (thick-sheet
+        # regime) to negative (thin-sheet regime).
+        grid = _REGIME_GRID_PARAMS
+        dof = simulate.measure_detection_dof(**grid)
+        sheet_kwargs = {k: v for k, v in grid.items() if k != "detection_na"}
+        ladder = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6)
+        sheets = [
+            simulate.measure_sheet_thickness(illumination_na=na, **sheet_kwargs)
+            for na in ladder
+        ]
+
+        for i in range(1, len(sheets)):
+            with self.subTest(index=i, illumination_na=ladder[i]):
+                self.assertLess(sheets[i], sheets[i - 1])
+
+        signs = [1 if (sheet - dof) > 0 else -1 for sheet in sheets]
+        sign_changes = sum(1 for i in range(1, len(signs)) if signs[i] != signs[i - 1])
+        self.assertEqual(sign_changes, 1)
+        self.assertEqual(signs[0], 1)
+        self.assertEqual(signs[-1], -1)
+
+    def test_detection_and_illumination_peaks_sit_at_the_array_centre_with_ni0_equal_to_ni(
+        self,
+    ):
+        # RA-9 (gap closure): on an odd grid with ni0 == ni, both the
+        # detection-only seed and the illumination-only PSF peak within one
+        # sample of the array centre -- no spherical-aberration focal shift
+        # (halt finding 2).
+        grid = dict(
+            detection_na=0.6,
+            illumination_na=0.6,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=1.33,
+            dxy=0.1,
+            dz=0.1,
+            psf_size_z=65,
+            psf_size_xy=65,
+        )
+        centre = (32, 32, 32)
+
+        seed = generate_psf_seed(
+            psf_mode="single",
+            na=grid["detection_na"],
+            detection_na=grid["detection_na"],
+            illumination_na=None,
+            wavelength=grid["wavelength"],
+            ni=grid["ni"],
+            ns=grid["ns"],
+            ni0=grid["ni0"],
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=3,
+            psf_model="vectorial",
+            dxy=grid["dxy"],
+            dz=grid["dz"],
+            psf_size_z=grid["psf_size_z"],
+            psf_size_xy=grid["psf_size_xy"],
+            background=0.0,
+        )
+        detection_peak = np.unravel_index(np.argmax(seed), seed.shape)
+        with self.subTest(arm="detection"):
+            for axis in range(3):
+                self.assertLessEqual(abs(detection_peak[axis] - centre[axis]), 1)
+
+        illumination_psf = generate_theoretical_psf(
+            detection_na=grid["illumination_na"],
+            illumination_na=grid["illumination_na"],
+            wavelength=grid["wavelength"],
+            ni=grid["ni"],
+            ns=grid["ns"],
+            ni0=grid["ni0"],
+            dxy=grid["dxy"],
+            dz=grid["dz"],
+            psf_size_z=grid["psf_size_z"],
+            psf_size_xy=grid["psf_size_xy"],
+        )
+        illumination_peak = np.unravel_index(
+            np.argmax(illumination_psf), illumination_psf.shape
+        )
+        with self.subTest(arm="illumination"):
+            for axis in range(3):
+                self.assertLessEqual(abs(illumination_peak[axis] - centre[axis]), 1)
 
     def test_module_imports_are_confined_to_numpy_warnings_and_the_seed_functions(self):
         source = Path(system_psf_profile.__file__).read_text(encoding="utf-8")
@@ -419,6 +548,53 @@ class SystemPsfProfileHygieneTests(unittest.TestCase):
 
         self.assertIn("generate_psf_seed", stripped_source)
         self.assertIn("emitter_offset", stripped_source)
+
+    def test_rejects_anisotropic_voxels_before_generating_any_psf(self):
+        with mock.patch.object(system_psf_profile, "generate_psf_seed") as mocked_seed, \
+                mock.patch.object(
+                    system_psf_profile, "generate_theoretical_psf"
+                ) as mocked_theoretical:
+            light_sheet_kwargs = dict(_VALID_LIGHT_SHEET_KWARGS, dxy=0.108, dz=0.3)
+            aslm_kwargs = dict(_VALID_ASLM_KWARGS, dxy=0.108, dz=0.3)
+            dof_kwargs = dict(
+                {
+                    k: v
+                    for k, v in _VALID_LIGHT_SHEET_KWARGS.items()
+                    if k not in ("positions_um", "illumination_na")
+                },
+                dxy=0.108,
+                dz=0.3,
+            )
+            sheet_kwargs = dict(
+                {
+                    k: v
+                    for k, v in _VALID_LIGHT_SHEET_KWARGS.items()
+                    if k not in ("positions_um", "detection_na")
+                },
+                dxy=0.108,
+                dz=0.3,
+            )
+
+            cases = (
+                (
+                    "measure_light_sheet_system_fwhm_profile",
+                    simulate.measure_light_sheet_system_fwhm_profile,
+                    light_sheet_kwargs,
+                ),
+                (
+                    "measure_aslm_system_fwhm_profile",
+                    simulate.measure_aslm_system_fwhm_profile,
+                    aslm_kwargs,
+                ),
+                ("measure_detection_dof", simulate.measure_detection_dof, dof_kwargs),
+                ("measure_sheet_thickness", simulate.measure_sheet_thickness, sheet_kwargs),
+            )
+            for name, fn, kwargs in cases:
+                with self.subTest(function=name):
+                    with self.assertRaisesRegex(ValueError, "must equal dxy"):
+                        fn(**kwargs)
+                    self.assertEqual(mocked_seed.call_count, 0)
+                    self.assertEqual(mocked_theoretical.call_count, 0)
 
     def test_rejects_invalid_parameters_before_generating_any_psf(self):
         with mock.patch.object(system_psf_profile, "generate_psf_seed") as mocked:
