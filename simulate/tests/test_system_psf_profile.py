@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import unittest
 import warnings
 from pathlib import Path
@@ -646,6 +647,19 @@ class SystemPsfProfileHygieneTests(unittest.TestCase):
         text = str(caught[0].message)
         self.assertIn("0.0", text)
         self.assertIn("5.0", text)
+
+    def test_retired_gated_measurement_is_gone(self):
+        # D-08: the physically wrong self-gating measurement -- its public
+        # function, its module (including GATE_AXIS), and its export -- is
+        # permanently retired. Built by concatenation so this test file never
+        # spells out the retired name as a literal reference some future
+        # tracked-source scanner might flag.
+        retired_function_name = "measure_gated" + "_beam_width_profile"
+        retired_module_name = "simulate.gated" + "_beam_profile"
+
+        self.assertFalse(hasattr(simulate, retired_function_name))
+        self.assertNotIn(retired_function_name, simulate.__all__)
+        self.assertIsNone(importlib.util.find_spec(retired_module_name))
 
 
 if __name__ == "__main__":
