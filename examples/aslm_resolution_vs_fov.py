@@ -31,7 +31,17 @@
 # keeping D-01's [tool.uv.sources] mechanism and the zero-extra-flag
 # invocation intact. See .planning/phases/04-pep-723-example-scripts/
 # 04-02-SUMMARY.md for the full remediation-ladder writeup.
-"""Plot ASLM system-PSF axial FWHM vs. position across a fixed FOV window (EX-05, 8.1 D-09)."""
+"""Plot ASLM system-PSF axial FWHM vs. position across a fixed FOV window (EX-05, 8.1 D-09).
+
+Notes / limitations (printed to stdout by main(), kept out of the figure
+itself for publication -- user-directed deviation, plan 08.1-13):
+    - Residual (deferred): illumination is simulated as a 3-D pencil beam,
+      not a y-integrated light sheet, so off-waist light-sheet axial FWHM
+      shows pencil-beam Fresnel structure beyond about 1-2 Rayleigh ranges
+      rather than a smooth rise; the ASLM curve is flat by construction
+      under perfect shutter/beam synchronization.
+    - Sampling: dz == dxy with ni0 == ni.
+"""
 
 from __future__ import annotations
 
@@ -102,6 +112,20 @@ COMMON = {
 # NA_SWEEP takes about 2-3 minutes.
 FOV_POSITIONS_UM: tuple[float, ...] = tuple(float(v) for v in np.linspace(-50.0, 50.0, 51))
 
+# D-19/RA-6-disclose: pencil-beam residual disclosure, duplicated per the
+# single-file PEP 723 philosophy (no shared helper module between example
+# scripts) rather than imported from a sibling script. Deferred to a later
+# seeds.py phase (deferred-items.md DEF-SEEDS-2/DEF-SEEDS-5); tracked
+# permanently by tests/test_example_simulation_audit.py.
+PENCIL_BEAM_NOTE = (
+    "Residual (deferred): illumination is simulated as a 3-D pencil beam, "
+    "not a y-integrated light sheet, so off-waist light-sheet axial FWHM "
+    "shows pencil-beam Fresnel structure beyond about 1-2 Rayleigh ranges "
+    "rather than a smooth rise; the ASLM curve is flat by construction "
+    "under perfect shutter/beam synchronization. Sampling: dz == dxy with "
+    "ni0 == ni."
+)
+
 
 def run_sweep(
     nas: tuple[float, ...] = NA_SWEEP,
@@ -113,10 +137,10 @@ def run_sweep(
     order, each measured through
     `simulate.measure_aslm_system_fwhm_profile(positions_um=positions,
     detection_na=DETECTION_NA, illumination_na=na, slit_width=SLIT_WIDTH,
-    **COMMON)` -- never the retired self-gated
-    `measure_gated_beam_width_profile`. `positions_um` defaults to the
-    module-level `FOV_POSITIONS_UM`, read at call time (not captured as a
-    default-argument value), so `examples/resolution_vs_fov_by_na.py`'s own
+    **COMMON)` -- never the retired self-gated measurement. `positions_um`
+    defaults to the module-level `FOV_POSITIONS_UM`, read at call time (not
+    captured as a default-argument value), so
+    `examples/resolution_vs_fov_by_na.py`'s own
     `run_sweep()` call and this module's regression tests both see the
     current value. The returned positions are already centred on the waist
     home (D-05/D-07), so no re-centring offset applies here, unlike the
@@ -237,6 +261,11 @@ def main() -> None:
     """Run the sweep, build the figure, and save it under examples/output/."""
     results = run_sweep()
     print_table(results)
+    # User-directed deviation (plan 08.1-13): the pencil-beam disclosure used
+    # to render as a fig.text footnote; it is now printed to stdout (and kept
+    # in the module docstring's Notes / limitations section) instead, so the
+    # figure itself stays clean for publication.
+    print(PENCIL_BEAM_NOTE)
     fig = build_sweep_figure(results)
     if fig is None:
         raise SystemExit("no sweep point produced a measurable width -- nothing to plot or save")

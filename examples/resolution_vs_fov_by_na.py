@@ -31,7 +31,17 @@
 # keeping D-01's [tool.uv.sources] mechanism and the zero-extra-flag
 # invocation intact. See .planning/phases/04-pep-723-example-scripts/
 # 04-02-SUMMARY.md for the full remediation-ladder writeup.
-"""Pair the shipped light-sheet and ASLM resolution-vs-FOV curves, one page per illumination NA."""
+"""Pair the shipped light-sheet and ASLM resolution-vs-FOV curves, one page per illumination NA.
+
+Notes / limitations (printed to stdout by main(), kept out of the figure
+itself for publication -- user-directed deviation, plan 08.1-13):
+    - Residual (deferred): illumination is simulated as a 3-D pencil beam,
+      not a y-integrated light sheet, so off-waist light-sheet axial FWHM
+      shows pencil-beam Fresnel structure beyond about 1-2 Rayleigh ranges
+      rather than a smooth rise; the ASLM curve is flat by construction
+      under perfect shutter/beam synchronization.
+    - Sampling: dz == dxy with ni0 == ni.
+"""
 
 from __future__ import annotations
 
@@ -63,6 +73,20 @@ Y_LABEL = "system-PSF axial FWHM (um)"
 
 LIGHT_SHEET_LABEL = "static light sheet"
 ASLM_LABEL_TEMPLATE = "ASLM (slit_width={:.2f} um)"
+
+# D-19/RA-6-disclose: pencil-beam residual disclosure, duplicated per the
+# single-file PEP 723 philosophy (no shared helper module between example
+# scripts) rather than imported from a sibling script. Deferred to a later
+# seeds.py phase (deferred-items.md DEF-SEEDS-2/DEF-SEEDS-5); tracked
+# permanently by tests/test_example_simulation_audit.py.
+PENCIL_BEAM_NOTE = (
+    "Residual (deferred): illumination is simulated as a 3-D pencil beam, "
+    "not a y-integrated light sheet, so off-waist light-sheet axial FWHM "
+    "shows pencil-beam Fresnel structure beyond about 1-2 Rayleigh ranges "
+    "rather than a smooth rise; the ASLM curve is flat by construction "
+    "under perfect shutter/beam synchronization. Sampling: dz == dxy with "
+    "ni0 == ni."
+)
 
 
 def load_example_script(path: Path) -> ModuleType:
@@ -190,6 +214,11 @@ def write_by_na_pdf(figures: list[plt.Figure], output_path: Path) -> int:
 
 def main() -> None:
     """Load both shipped scripts, pair their sweeps, and write the combined by-NA PDF."""
+    # User-directed deviation (plan 08.1-13): the pencil-beam disclosure used
+    # to render as a fig.text footnote on every page; it is now printed to
+    # stdout (and kept in the module docstring's Notes / limitations
+    # section) instead, so the figures themselves stay clean for publication.
+    print(PENCIL_BEAM_NOTE)
     light_sheet = load_example_script(LIGHT_SHEET_SCRIPT)
     aslm = load_example_script(ASLM_SCRIPT)
 

@@ -31,7 +31,17 @@
 # keeping D-01's [tool.uv.sources] mechanism and the zero-extra-flag
 # invocation intact. See .planning/phases/04-pep-723-example-scripts/
 # 04-02-SUMMARY.md for the full remediation-ladder writeup.
-"""Plot static light-sheet system-PSF axial FWHM vs. position across a fixed FOV window (EX-04, 8.1 D-09)."""
+"""Plot static light-sheet system-PSF axial FWHM vs. position across a fixed FOV window (EX-04, 8.1 D-09).
+
+Notes / limitations (printed to stdout by main(), kept out of the figure
+itself for publication -- user-directed deviation, plan 08.1-13):
+    - Residual (deferred): illumination is simulated as a 3-D pencil beam,
+      not a y-integrated light sheet, so off-waist light-sheet axial FWHM
+      shows pencil-beam Fresnel structure beyond about 1-2 Rayleigh ranges
+      rather than a smooth rise; the ASLM curve is flat by construction
+      under perfect shutter/beam synchronization.
+    - Sampling: dz == dxy with ni0 == ni.
+"""
 
 from __future__ import annotations
 
@@ -114,6 +124,20 @@ FOV_POSITIONS_UM: tuple[float, ...] = tuple(float(v) for v in np.linspace(-50.0,
 # apply to it), so this annotation carries psfmodels' default-ni0 axial
 # offset of about 0.7 um -- an approximate marker, not a precise boundary.
 RAYLEIGH_WINDOW = {"dz": 0.300, "psf_size_z": 1335}
+
+# D-19/RA-6-disclose: pencil-beam residual disclosure, duplicated per the
+# single-file PEP 723 philosophy (no shared helper module between example
+# scripts) rather than imported from a sibling script. Deferred to a later
+# seeds.py phase (deferred-items.md DEF-SEEDS-2/DEF-SEEDS-5); tracked
+# permanently by tests/test_example_simulation_audit.py.
+PENCIL_BEAM_NOTE = (
+    "Residual (deferred): illumination is simulated as a 3-D pencil beam, "
+    "not a y-integrated light sheet, so off-waist light-sheet axial FWHM "
+    "shows pencil-beam Fresnel structure beyond about 1-2 Rayleigh ranges "
+    "rather than a smooth rise; the ASLM curve is flat by construction "
+    "under perfect shutter/beam synchronization. Sampling: dz == dxy with "
+    "ni0 == ni."
+)
 
 
 def run_sweep(
@@ -325,6 +349,11 @@ def main() -> None:
     """Run the sweep, print the table, build the figure, and save it under examples/output/."""
     results = run_sweep()
     print_table(results)
+    # User-directed deviation (plan 08.1-13): the pencil-beam disclosure used
+    # to render as a fig.text footnote; it is now printed to stdout (and kept
+    # in the module docstring's Notes / limitations section) instead, so the
+    # figure itself stays clean for publication.
+    print(PENCIL_BEAM_NOTE)
     fig = build_sweep_figure(results)
     if fig is None:
         raise SystemExit("no sweep point produced a measurable width -- nothing to plot or save")
