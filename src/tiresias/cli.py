@@ -92,7 +92,9 @@ def _add_optical_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help=(
             "ASLM slit window FWHM as a sample count along the propagation axis, "
-            "converted to physical units with --dz."
+            "converted to physical units with --dz. --dz is required for this "
+            "form: a missing or non-positive --dz raises a ValueError before "
+            "any PSF is generated."
         ),
     )
     parser.add_argument(

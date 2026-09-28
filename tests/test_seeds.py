@@ -607,6 +607,100 @@ class SeedTests(unittest.TestCase):
         # "fixes" the conversion back to Phase 1 D-09's dxy-always rule.
         self.assertFalse(np.allclose(psf_px, psf_dxy_equivalent))
 
+    def test_aslm_slit_width_px_without_positive_dz_raises_value_error(self):
+        # CR-01 (08.1-REVIEW.md): slit_width_px is converted via dz
+        # (D-17), but before this fix dz had no pre-validation anywhere,
+        # so a missing/non-positive dz crashed with an unguarded TypeError
+        # instead of the module's normal descriptive ValueError.
+        base_kwargs = dict(
+            psf_mode="aslm",
+            na=1.0,
+            detection_na=1.0,
+            illumination_na=0.2,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=3,
+            psf_model="vectorial",
+            dxy=0.108,
+            psf_size_z=9,
+            psf_size_xy=9,
+            background=0.0,
+            polar_deg=90.0,
+            azimuthal_deg=0.0,
+            slit_width_px=4,
+        )
+
+        for dz in (None, 0, -1, float("nan"), float("inf")):
+            with self.subTest(dz=repr(dz)):
+                with mock.patch.object(
+                    seeds,
+                    "generate_theoretical_psf",
+                    return_value=np.ones((9, 9, 9), dtype=np.float32),
+                ) as generate_theoretical_psf:
+                    with self.assertRaises(ValueError) as cm:
+                        seeds.generate_psf_seed(**base_kwargs, dz=dz)
+
+                    # assertRaises(ValueError) does not catch TypeError, so a
+                    # regression to the unguarded multiply (CR-01) surfaces
+                    # as a test error here, not a silent pass.
+                    self.assertIn(
+                        "dz must be finite and > 0 to convert slit_width_px",
+                        str(cm.exception),
+                    )
+                    self.assertIn(f"got {dz!r}", str(cm.exception))
+                    generate_theoretical_psf.assert_not_called()
+
+    def test_aslm_slit_width_without_dz_keeps_the_missing_parameter_error(self):
+        # Characterization pin (Task 2, 08.1-15): the physical slit_width
+        # path already required dz before this fix -- generate_theoretical_psf
+        # raises its own "Missing required optical/acquisition parameter(s)"
+        # ValueError for None/0/-1, before psfmodels.make_psf runs. This test
+        # passes before and after Task 1's guard, and records that dz was
+        # already required here, so this gap fix does not newly require it.
+        base_kwargs = dict(
+            psf_mode="aslm",
+            na=1.0,
+            detection_na=1.0,
+            illumination_na=0.2,
+            wavelength=0.561,
+            ni=1.33,
+            ns=1.33,
+            ni0=None,
+            tg=None,
+            tg0=None,
+            ng=None,
+            ng0=None,
+            ti0=None,
+            oversample_factor=3,
+            psf_model="vectorial",
+            dxy=0.108,
+            psf_size_z=9,
+            psf_size_xy=9,
+            background=0.0,
+            polar_deg=90.0,
+            azimuthal_deg=0.0,
+            slit_width=0.6,
+        )
+
+        for dz in (None, 0, -1):
+            with self.subTest(dz=repr(dz)):
+                with mock.patch.object(seeds.pm, "make_psf") as make_psf:
+                    with self.assertRaises(ValueError) as cm:
+                        seeds.generate_psf_seed(**base_kwargs, dz=dz)
+
+                    self.assertIn(
+                        "Missing required optical/acquisition parameter(s): dz",
+                        str(cm.exception),
+                    )
+                    make_psf.assert_not_called()
+
     def test_aslm_sub_sample_slit_falls_back_to_the_waist_limited_seed(self):
         # D-18: below one dz sample, no convolution runs -- the seed is
         # bit-identical to light_sheet (the waist-limited limit).

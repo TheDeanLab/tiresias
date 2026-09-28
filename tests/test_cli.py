@@ -649,6 +649,104 @@ class CliTests(unittest.TestCase):
                     # `imread` legitimately runs once before PSF acquisition on this
                     # command (plan 02-02's recorded ordering) — not asserted here.
 
+    def test_both_cli_entry_points_reject_slit_width_px_without_positive_dz(self):
+        # CR-01 (08.1-REVIEW.md): --slit-width-px without a positive --dz
+        # must raise the same descriptive ValueError through both shipped
+        # CLI entry points, never a TypeError, and must never reach
+        # generate_theoretical_psf or any downstream compute/write step.
+        from tiresias import cli
+        from tiresias import seeds
+
+        image = np.ones((3, 5, 5), dtype=np.float32)
+        seed = np.ones((3, 3, 3), dtype=np.float32) / 27.0
+
+        common_argv = [
+            "--detection-na",
+            "1.0",
+            "--illumination-na",
+            "0.2",
+            "--wavelength",
+            "0.561",
+            "--ni",
+            "1.33",
+            "--ns",
+            "1.33",
+            "--dxy",
+            "0.108",
+            "--oversample-factor",
+            "1",
+            "--psf-size-z",
+            "15",
+            "--psf-size-xy",
+            "15",
+            "--psf-mode",
+            "aslm",
+            "--slit-width-px",
+            "4",
+        ]
+
+        dz_variants = (([], "None"), (["--dz=0"], "0.0"), (["--dz=-1"], "-1.0"))
+
+        # `imread` legitimately runs once before PSF acquisition on
+        # deconvolve_main (plan 02-02's recorded ordering) -- excluded from
+        # the "never called" assertions below, matching
+        # test_deconvolve_cli_invalid_slit_arguments_fail_before_any_compute.
+        entry_point_cases = (
+            (
+                cli.estimate_psf_main,
+                [
+                    "--image-path",
+                    "volume.tif",
+                    "--output-path",
+                    "estimated_psf.tif",
+                ],
+                (
+                    ("estimate_psf_from_chunks", {"return_value": seed}, True),
+                    ("imwrite", {}, True),
+                ),
+            ),
+            (
+                cli.deconvolve_main,
+                [
+                    "--image-path",
+                    "volume.tif",
+                    "--output-path",
+                    "restored.tif",
+                ],
+                (
+                    ("imread", {"return_value": image}, False),
+                    ("deconvolve_with_cupy", {"return_value": image}, True),
+                    ("imwrite", {}, True),
+                ),
+            ),
+        )
+
+        for entry_point, base_argv, extra_mocks in entry_point_cases:
+            for suffix, label in dz_variants:
+                with self.subTest(entry_point=entry_point.__name__, dz=label):
+                    with contextlib.ExitStack() as stack:
+                        generate_theoretical_psf = stack.enter_context(
+                            mock.patch.object(seeds, "generate_theoretical_psf")
+                        )
+                        never_called = []
+                        for name, patch_kwargs, assert_never_called in extra_mocks:
+                            mocked = stack.enter_context(
+                                mock.patch.object(cli, name, **patch_kwargs)
+                            )
+                            if assert_never_called:
+                                never_called.append(mocked)
+                        with self.assertRaises(ValueError) as cm:
+                            entry_point(base_argv + common_argv + suffix)
+
+                        self.assertIn(
+                            "dz must be finite and > 0 to convert slit_width_px",
+                            str(cm.exception),
+                        )
+                        self.assertIn(f"got {label}", str(cm.exception))
+                        generate_theoretical_psf.assert_not_called()
+                        for mocked in never_called:
+                            mocked.assert_not_called()
+
     def test_both_cli_entry_points_plumb_every_aslm_flag_to_the_seed_function(self):
         from tiresias import cli
 
@@ -787,6 +885,17 @@ class CliTests(unittest.TestCase):
                 text = " ".join(build_parser().format_help().split())
                 self.assertIn("1.515", text)
                 self.assertIn("same value as --ni", text)
+
+    def test_slit_width_px_help_states_that_dz_is_required(self):
+        # WR-01 (08.1-REVIEW.md): --slit-width-px's help must disclose that
+        # --dz is required for this form, since a missing/non-positive --dz
+        # now raises a ValueError before any PSF is generated (CR-01).
+        from tiresias import cli
+
+        for build_parser in (cli.build_estimate_psf_parser, cli.build_deconvolve_parser):
+            with self.subTest(parser=build_parser.__name__):
+                text = " ".join(build_parser().format_help().split())
+                self.assertIn("--dz is required for this form", text)
 
 
 if __name__ == "__main__":

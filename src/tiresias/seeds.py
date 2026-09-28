@@ -305,7 +305,7 @@ def rotate_illumination(
 
 
 def _resolve_slit_fwhm(
-    slit_width: float | None, slit_width_px: int | None, dz: float
+    slit_width: float | None, slit_width_px: int | None, dz: float | None
 ) -> float:
     """Resolve the ASLM slit gate's FWHM in physical units from whichever form was supplied."""
     provided = [value for value in (slit_width, slit_width_px) if value is not None]
@@ -323,6 +323,16 @@ def _resolve_slit_fwhm(
     # axis (pre-rotation axis 0) -- overrides Phase 1 D-09, which used dxy
     # unconditionally regardless of which axis the gate acted on.
     # test_aslm_slit_width_px_converts_via_dz (plan 08.1-01) pins this.
+    # CR-01 (08.1-REVIEW.md / WR-02): this helper runs before
+    # generate_theoretical_psf's required_values check, so it must validate
+    # every operand it uses arithmetically -- a missing or non-positive dz
+    # otherwise crashed with an unguarded TypeError instead of the module's
+    # normal descriptive ValueError.
+    if dz is None or not math.isfinite(dz) or dz <= 0:
+        raise ValueError(
+            "dz must be finite and > 0 to convert slit_width_px to physical "
+            f"units for psf_mode='aslm', got {dz!r}"
+        )
     return slit_width_px * dz
 
 

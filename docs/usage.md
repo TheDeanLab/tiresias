@@ -135,7 +135,7 @@ Common PSF-estimation options:
 | `--psf-mode` | `single` | Theoretical seed mode: `single`, `light_sheet`, or `aslm`. The default preserves existing behavior exactly. |
 | `--ni0` | none (psfmodels uses `1.515`) | Immersion refractive index the objective was designed for. Leaving this unset lets psfmodels apply its own design value (`1.515`, oil), which adds spherical aberration and a focal shift for water-immersion setups. Pass the same value as `--ni` (for example `1.33`) for an aberration-free seed. |
 | `--slit-width` | none | ASLM slit window FWHM (same physical units as `--dz`), the Gaussian window the illumination is convolved with along the beam propagation direction. Applies only to `aslm` mode; exactly one of `--slit-width` or `--slit-width-px` must be supplied. |
-| `--slit-width-px` | none | ASLM slit window FWHM as a sample count along the propagation axis, converted to physical units via `--dz`. Applies only to `aslm` mode; exactly one of `--slit-width` or `--slit-width-px` must be supplied. |
+| `--slit-width-px` | none | ASLM slit window FWHM as a sample count along the propagation axis, converted to physical units via `--dz`. `--dz` is required for this form; a missing or non-positive `--dz` raises a `ValueError` before any PSF is generated. Applies only to `aslm` mode; exactly one of `--slit-width` or `--slit-width-px` must be supplied. |
 | `--illumination-polar-deg` | `90.0` | Polar angle, in degrees, of the illumination propagation direction, measured from the illumination's own pre-rotation +Z propagation axis. Used by both `light_sheet` and `aslm` modes. The default `90.0` (paired with the azimuthal default below) is the broadside default. |
 | `--illumination-azimuthal-deg` | `0.0` | Azimuthal angle, in degrees, of the illumination propagation direction, measured in the X-Y plane from +X. Used by both `light_sheet` and `aslm` modes. The default `0.0` (paired with the polar default above) is the broadside default. |
 
@@ -379,7 +379,10 @@ positive.
 
 `slit_width_px` is converted to physical units via `--dz`/`dz`, the sample
 spacing of the pre-rotation propagation axis — never `dxy`, regardless of
-which axis the beam ends up on after rotation.
+which axis the beam ends up on after rotation. `dz` must therefore be finite
+and greater than zero whenever `slit_width_px` is used; otherwise
+`generate_psf_seed` raises a `ValueError` naming `dz` before generating any
+PSF.
 
 The two forms produce identical seeds when the pixel count is scaled by the
 same spacing used for conversion (`dz`). This example builds the same `aslm`
@@ -540,6 +543,16 @@ confirm that the input TIFF is a 3-D volume with non-zero signal.
 `slit_width_px`, or neither, raises this error. See the physical-unit vs.
 pixel-count discussion in PSF Seed Modes above to choose the form that fits
 the beam propagation axis.
+
+`dz must be finite and > 0 to convert slit_width_px to physical units for psf_mode='aslm'`
+
+This fires when `aslm` mode receives the pixel-count width (`slit_width_px` /
+`--slit-width-px`) while `dz` / `--dz` is missing, zero, negative, or
+non-finite. The fix is to pass the Z sample spacing with `--dz` (or `dz=` in
+Python); it fires before any PSF is generated. `dz` is required for every
+theoretical seed, and the pixel-count form reports this specific message
+instead of the general missing-parameter error because the width conversion
+needs `dz` first.
 
 `ASLM slit-integrated illumination has no positive finite energy`
 
