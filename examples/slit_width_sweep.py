@@ -31,7 +31,18 @@
 # keeping D-01's [tool.uv.sources] mechanism and the zero-extra-flag
 # invocation intact. See .planning/phases/04-pep-723-example-scripts/
 # 04-02-SUMMARY.md for the full remediation-ladder writeup.
-"""Sweep ASLM slit_width and report/plot the resulting axial FWHM (EX-03)."""
+"""Sweep ASLM slit_width and report/plot the resulting axial FWHM (EX-03).
+
+Notes / limitations (printed to stdout by main(), kept out of the figure
+itself for publication -- gap closure, plan 08.1-12):
+    - Residual (deferred): illumination is a 3-D pencil beam, not a
+      y-integrated light sheet; lateral (Y) widths are optimistic and
+      off-waist light_sheet profiles carry pencil-beam Fresnel structure.
+    - Sampling: cubic voxels (dz == dxy), ni0 == ni.
+    - slit_width is the FWHM of a Gaussian window (D-03); Dean et al. 2015
+      used a rectangular slit W = 2*xR, and a Gaussian with the same second
+      moment has FWHM ~0.68*W.
+"""
 
 from __future__ import annotations
 
@@ -327,7 +338,7 @@ def build_sweep_figure(
         waist_limited_fwhm,
         color="gray",
         linestyle="--",
-        label=f"waist-limited (light_sheet) reference ({waist_limited_fwhm:.4f} um)",
+        label=f"waist-limited (light sheet) reference ({waist_limited_fwhm:.4f} um)",
     )
     ax.axhline(
         swept_average_fwhm,
@@ -335,16 +346,16 @@ def build_sweep_figure(
         linestyle=":",
         label=f"swept-average sheet reference ({swept_average_fwhm:.4f} um)",
     )
-    ax.set_xlabel("slit_width (um)")
+    ax.set_xlabel("slit width (um)")
     ax.set_ylabel("axial FWHM (um)")
     ax.legend()
 
     first_width, first_fwhm = widths[0], fwhms[0]
     last_width, last_fwhm = widths[-1], fwhms[-1]
     if last_fwhm > first_fwhm:
-        direction = "widens (axial resolution degrades) as slit_width increases"
+        direction = "widens (axial resolution degrades) as slit width increases"
     elif last_fwhm < first_fwhm:
-        direction = "narrows (axial resolution improves) as slit_width increases"
+        direction = "narrows (axial resolution improves) as slit width increases"
     else:
         direction = "stays constant across the sweep"
 
@@ -356,26 +367,18 @@ def build_sweep_figure(
     monotonic_str = "yes" if monotonic else "no"
 
     ax.set_title(
-        "ASLM axial FWHM vs slit_width\n"
+        "ASLM axial FWHM vs slit width\n"
         f"Measured: FWHM {direction}\n"
         f"monotonic non-decreasing: {monotonic_str}\n"
-        f"({first_fwhm:.4f} um at slit_width={first_width:.2f} um -> "
-        f"{last_fwhm:.4f} um at slit_width={last_width:.2f} um)"
+        f"({first_fwhm:.4f} um at slit width = {first_width:.2f} um -> "
+        f"{last_fwhm:.4f} um at slit width = {last_width:.2f} um)"
     )
-    # D-19: one combined footnote carrying the pencil-beam, sampling and
-    # Dean slit-mapping disclosures. rect=(0, 0.1, 1, 1) reserves the bottom
-    # 10% of the figure for it so tight_layout does not overlap the axes --
-    # the same clipping class 08.1-06/08.1-09 fixed for other in-figure text.
-    fig.text(
-        0.5,
-        0.01,
-        f"{PENCIL_BEAM_NOTE} {SAMPLING_NOTE} {SLIT_MAPPING_NOTE}",
-        ha="center",
-        va="bottom",
-        fontsize=7,
-        wrap=True,
-    )
-    fig.tight_layout(rect=(0, 0.1, 1, 1))
+    # Gap closure (user-requested publication cleanup, plan 08.1-12): the
+    # pencil-beam, sampling and Dean slit-mapping disclosures used to render
+    # as a figure footnote here; they are now printed to stdout by main()
+    # (and kept in the module docstring's Notes / limitations section)
+    # instead, so the figure itself stays clean.
+    fig.tight_layout()
     return fig
 
 
@@ -398,6 +401,13 @@ def main() -> None:
 
     results = run_sweep()
     print_table(results, waist_limited_fwhm, swept_average_fwhm)
+    # Gap closure (user-requested publication cleanup, plan 08.1-12): these
+    # disclosures used to render as a figure footnote; they are now printed
+    # to stdout (and kept in the module docstring's Notes / limitations
+    # section) instead, so the figure itself stays clean.
+    print(PENCIL_BEAM_NOTE)
+    print(SAMPLING_NOTE)
+    print(SLIT_MAPPING_NOTE)
 
     if all(fwhm is None for _, fwhm in results):
         # Degenerate-sweep guard: every point was rejected or unmeasurable.

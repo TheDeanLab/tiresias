@@ -127,9 +127,11 @@ class SweepTrendTests(unittest.TestCase):
 
 
 class DisclosureTests(unittest.TestCase):
-    """D-03/D-19: the figure states the pencil-beam, sampling and slit-mapping residuals."""
+    """D-03/D-19: the pencil-beam, sampling and slit-mapping residuals are disclosed
+    (in the module docstring and stdout), and the figure itself stays free of the
+    citation/blurb (gap closure, plan 08.1-12 publication cleanup)."""
 
-    def test_figure_discloses_the_pencil_beam_residual_sampling_and_slit_mapping(self):
+    def test_figure_excludes_the_disclosure_blurb_but_the_docstring_keeps_it(self):
         module = _load(_SCRIPT_RELATIVE)
         results = [(0.1, 1.0), (2.0, 1.1)]
         fig = module.build_sweep_figure(results, 1.0, 1.2)
@@ -139,14 +141,19 @@ class DisclosureTests(unittest.TestCase):
             texts += [t.get_text() for t in fig.texts]
             texts += [ax.get_title() for ax in fig.axes]
             combined = "\n".join(texts)
-            self.assertIn("pencil beam", combined)
-            self.assertIn("dz == dxy", combined)
-            self.assertIn("ni0 == ni", combined)
-            self.assertIn("Dean", combined)
-            self.assertIn("W = 2*xR", combined)
+            self.assertNotIn("Residual", combined)
+            self.assertNotIn("Dean", combined)
+            self.assertNotIn("(deferred)", combined)
         finally:
             plt.close(fig)
         self.assertEqual(plt.get_fignums(), [])
+
+        docstring = module.__doc__ or ""
+        self.assertIn("pencil beam", docstring)
+        self.assertIn("dz == dxy", docstring)
+        self.assertIn("ni0 == ni", docstring)
+        self.assertIn("Dean", docstring)
+        self.assertIn("W = 2*xR", docstring)
 
 
 if __name__ == "__main__":

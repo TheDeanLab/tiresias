@@ -116,42 +116,109 @@ class RegimeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.module = _load(_SCRIPT_RELATIVE)
 
-    def test_run_sweep_reproduces_both_regimes(self):
-        dof_um, results = self.module.run_sweep(nas=(0.10, 0.60))
-        self.assertEqual(len(results), 2)
-        (na_thick, sheet_thick, ls_thick, aslm_thick), (
-            na_thin,
-            sheet_thin,
-            ls_thin,
-            aslm_thin,
-        ) = results
-        self.assertEqual(na_thick, 0.10)
-        self.assertEqual(na_thin, 0.60)
+    def test_run_sweep_shows_both_regimes_qualitatively(self):
+        """RA-7 (gap closure, plan 08.1-12 Task 2): no exact-number regime
+        tolerance is asserted (halt route step 5) -- only the ordering,
+        limiting-reference and crossover-bracket claims that hold regardless
+        of the exact measured values.
+        """
+        dof_um, results = self.module.run_sweep(nas=(0.10, 0.30, 0.40, 0.60))
+        self.assertEqual(len(results), 4)
+
+        sheets = [sheet for _na, sheet, _ls, _aslm in results]
+        for earlier, later in zip(sheets, sheets[1:]):
+            self.assertGreater(earlier, later, sheets)
 
         # D-11: sheet(0.10) > DOF > sheet(0.60).
-        self.assertGreater(sheet_thick, dof_um)
-        self.assertGreater(dof_um, sheet_thin)
+        self.assertGreater(sheets[0], dof_um)
+        self.assertGreater(dof_um, sheets[-1])
 
-        # D-11: at NA 0.10 (sheet thicker than DOF), the measured system FWHM
-        # sits closer to the DOF than to the sheet thickness.
-        for f in (ls_thick, aslm_thick):
-            self.assertLess(abs(f - dof_um), abs(f - sheet_thick))
+        for na, sheet_um, light_sheet_um, aslm_um in results:
+            reference_min = min(sheet_um, dof_um)
+            reference_max = max(sheet_um, dof_um)
+            for mode, f in (("light_sheet", light_sheet_um), ("aslm", aslm_um)):
+                with self.subTest(na=na, mode=mode):
+                    self.assertLessEqual(f, reference_min + 1e-9)
+                    self.assertLess(abs(f - reference_min), abs(f - reference_max))
 
-        # D-11: at NA 0.60 (sheet thinner than DOF), the measured system FWHM
-        # sits closer to the sheet thickness than to the DOF.
-        for f in (ls_thin, aslm_thin):
-            self.assertLess(abs(f - sheet_thin), abs(f - dof_um))
+        crossover = self.module.locate_crossover_na(dof_um, results)
+        self.assertIsNotNone(crossover)
+        self.assertGreater(crossover, 0.10)
+        self.assertLess(crossover, 0.60)
+
+    def test_locate_crossover_na_interpolates_the_measured_sign_change(self):
+        """Synthetic sign-change data: the crossover is a linear interpolation
+        between the last sheet-above-DOF row and the first sheet-at-or-below-
+        DOF row, never a search over the raw NA grid.
+        """
+        dof_um = 1.0
+        results = [
+            (0.1, 2.0, 0.0, 0.0),
+            (0.3, 1.5, 0.0, 0.0),
+            (0.5, 0.5, 0.0, 0.0),
+        ]
+        crossover = self.module.locate_crossover_na(dof_um, results)
+        self.assertAlmostEqual(crossover, 0.4, places=12)
+
+        no_crossing_results = [
+            (0.1, 2.0, 0.0, 0.0),
+            (0.3, 1.8, 0.0, 0.0),
+            (0.5, 1.5, 0.0, 0.0),
+        ]
+        self.assertIsNone(self.module.locate_crossover_na(dof_um, no_crossing_results))
 
     def test_figure_draws_measured_dof_and_sheet_reference_lines(self):
         dof_um = 1.0
         results = [
-            (0.10, 3.0, 1.05, 1.05),
-            (0.60, 0.5, 0.55, 0.55),
+            (0.10, 3.0, 0.95, 0.95),
+            (0.60, 0.5, 0.45, 0.45),
         ]
         fig = self.module.build_regime_figure(dof_um, results)
-        legend_texts = [text.get_text() for text in fig.axes[0].get_legend().get_texts()]
-        self.assertTrue(any("DOF" in text for text in legend_texts), legend_texts)
-        self.assertTrue(any("sheet thickness" in text for text in legend_texts), legend_texts)
+
+        # Gap closure (user display-fix round 1): the left panel's y axis
+        # must be log-scaled so the sheet-thickness curve at low NA no
+        # longer stretches the system-FWHM points into a flat line.
+        self.assertEqual(fig.axes[0].get_yscale(), "log")
+
+        abs_legend_texts = [text.get_text() for text in fig.axes[0].get_legend().get_texts()]
+        self.assertTrue(any("DOF" in text for text in abs_legend_texts), abs_legend_texts)
+        self.assertTrue(
+            any("sheet thickness" in text for text in abs_legend_texts), abs_legend_texts
+        )
+
+        # Gap closure (publication cleanup, plan 08.1-12): the measured
+        # crossover value is still shown -- through this legend entry --
+        # even though it moved out of the suptitle prose.
+        self.assertTrue(
+            any("crossover" in text for text in abs_legend_texts), abs_legend_texts
+        )
+
+        norm_legend_texts = [text.get_text() for text in fig.axes[1].get_legend().get_texts()]
+        self.assertTrue(
+            any("DOF-limited" in text for text in norm_legend_texts), norm_legend_texts
+        )
+        self.assertTrue(
+            any("sheet-limited" in text for text in norm_legend_texts), norm_legend_texts
+        )
+
+        # Gap closure (publication cleanup, plan 08.1-12): the citation and
+        # disclosure blurb are out of the figure text entirely -- moved to
+        # the module docstring and printed to stdout by main() instead.
+        figure_texts = [fig.get_suptitle() or ""]
+        figure_texts += [t.get_text() for t in fig.texts]
+        figure_texts += [ax.get_title() for ax in fig.axes]
+        figure_texts += abs_legend_texts + norm_legend_texts
+        combined_figure_text = "\n".join(figure_texts)
+        self.assertNotIn("Residual", combined_figure_text)
+        self.assertNotIn("Dean", combined_figure_text)
+        self.assertNotIn("(deferred)", combined_figure_text)
+
+        # The disclosure content itself must survive somewhere: the module
+        # docstring's Notes / limitations section.
+        docstring = self.module.__doc__ or ""
+        self.assertIn("pencil beam", docstring)
+        self.assertIn("Sampling", docstring)
+        self.assertIn("crossover", docstring)
 
         plt.close(fig)
         self.assertEqual(plt.get_fignums(), [])

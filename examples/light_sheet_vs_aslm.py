@@ -28,7 +28,18 @@
 # marker that can never be satisfied, removing it from resolution while
 # keeping D-01's [tool.uv.sources] mechanism and the zero-extra-flag
 # invocation intact.
-"""Contrast static light_sheet and ASLM PSF seed generation via generate_psf_seed()."""
+"""Contrast static light_sheet and ASLM PSF seed generation via generate_psf_seed().
+
+Notes / limitations (printed to stdout by main(), kept out of the figure
+itself for publication -- gap closure, plan 08.1-12):
+    - Residual (deferred): illumination is a 3-D pencil beam, not a
+      y-integrated light sheet; lateral (Y) widths are optimistic and
+      off-waist light_sheet profiles carry pencil-beam Fresnel structure.
+    - Sampling: cubic voxels (dz == dxy), ni0 == ni. slit_width is the FWHM
+      of a Gaussian window (D-03); Dean et al. 2015 used a rectangular
+      slit W = 2*xR, and a Gaussian with the same second moment has FWHM
+      ~0.68*W.
+"""
 
 from __future__ import annotations
 
@@ -558,14 +569,14 @@ def build_comparison_figure(
         ax_waist.imshow(
             _peak_normalised(panel_waist), aspect="equal", norm=panel_norm, extent=extent
         )
-        ax_waist.set_title(f"light_sheet {proj_label} MIP\nemitter at the waist", fontsize=8)
+        ax_waist.set_title(f"light sheet {proj_label} MIP\nemitter at the waist", fontsize=8)
 
         ax_off_waist.imshow(
             _peak_normalised(panel_off_waist), aspect="equal", norm=panel_norm, extent=extent
         )
         ax_off_waist.set_title(
-            f"light_sheet {proj_label} MIP\nemitter {off_waist_um:.1f} um off-waist\n"
-            f"sheet ~{illumination_fwhm_um:.1f} um thick here",
+            f"light sheet {proj_label} MIP\nemitter {off_waist_um:.1f} um off-waist\n"
+            f"sheet FWHM {illumination_fwhm_um:.1f} um at this position",
             fontsize=8,
         )
 
@@ -577,9 +588,9 @@ def build_comparison_figure(
         # class of title-clipping issue 08.1-06 fixed
         # for the in-image annotation this title text replaced.
         ax_aslm.set_title(
-            f"aslm {proj_label} MIP\n"
-            f"slit_width={slit_width:.2f} um, integrated along propagation\n"
-            "(X at this direction), identical at every FOV position (D-07)",
+            f"ASLM {proj_label} MIP\n"
+            f"slit width = {slit_width:.2f} um, integrated along propagation\n"
+            "(X at this direction), identical at every FOV position",
             fontsize=8,
         )
 
@@ -618,7 +629,7 @@ def build_comparison_figure(
         marker="o",
         markersize=3,
         color=CURVE_COLORS["light_sheet"],
-        label="light_sheet",
+        label="light sheet",
     )
     ax_profile.plot(
         z_um,
@@ -626,7 +637,7 @@ def build_comparison_figure(
         marker="o",
         markersize=3,
         color=CURVE_COLORS["light_sheet_off_waist"],
-        label=f"light_sheet ({off_waist_um:.1f} um off-waist)",
+        label=f"light sheet ({off_waist_um:.1f} um off-waist)",
     )
     ax_profile.plot(
         z_um,
@@ -634,7 +645,7 @@ def build_comparison_figure(
         marker="o",
         markersize=3,
         color=CURVE_COLORS["aslm"],
-        label=f"aslm (slit_width={slit_width:.2f} um)",
+        label=f"ASLM (slit width = {slit_width:.2f} um)",
     )
     ax_profile.axhline(0.5, color="gray", linestyle="--", linewidth=1.0)
     ax_profile.set_xlabel("Z (um)")
@@ -679,7 +690,7 @@ def build_comparison_figure(
         marker="o",
         markersize=3,
         color=CURVE_COLORS["light_sheet"],
-        label=f"light_sheet (in-focus energy {fraction_light_sheet:.3f})",
+        label=f"light sheet (in-focus energy {fraction_light_sheet:.3f})",
     )
     ax_sectioning.semilogy(
         z_um,
@@ -688,7 +699,7 @@ def build_comparison_figure(
         markersize=3,
         color=CURVE_COLORS["light_sheet_off_waist"],
         label=(
-            f"light_sheet ({off_waist_um:.1f} um off-waist) "
+            f"light sheet ({off_waist_um:.1f} um off-waist) "
             f"(in-focus energy {fraction_light_sheet_off_waist:.3f})"
         ),
     )
@@ -699,7 +710,7 @@ def build_comparison_figure(
         markersize=3,
         color=CURVE_COLORS["aslm"],
         label=(
-            f"aslm (slit_width={slit_width:.2f} um) "
+            f"ASLM (slit width = {slit_width:.2f} um) "
             f"(in-focus energy {fraction_aslm:.3f})"
         ),
     )
@@ -731,7 +742,7 @@ def build_comparison_figure(
         marker="o",
         markersize=3,
         color=CURVE_COLORS["light_sheet"],
-        label="light_sheet",
+        label="light sheet",
     )
     ax_fraction.plot(
         z_um,
@@ -739,7 +750,7 @@ def build_comparison_figure(
         marker="o",
         markersize=3,
         color=CURVE_COLORS["light_sheet_off_waist"],
-        label=f"light_sheet ({off_waist_um:.1f} um off-waist)",
+        label=f"light sheet ({off_waist_um:.1f} um off-waist)",
     )
     ax_fraction.plot(
         z_um,
@@ -747,26 +758,25 @@ def build_comparison_figure(
         marker="o",
         markersize=3,
         color=CURVE_COLORS["aslm"],
-        label=f"aslm (slit_width={slit_width:.2f} um)",
+        label=f"ASLM (slit width = {slit_width:.2f} um)",
     )
     ax_fraction.set_xlabel("Z (um)")
     ax_fraction.set_ylabel("fraction of plane energy outside core")
     ax_fraction.set_title(
         f"Lateral energy fraction outside the detection core "
-        f"(r_core_um={r_core_um:.4f} um, half the detection lateral FWHM) vs Z"
+        f"(core radius = {r_core_um:.4f} um, half the detection lateral FWHM) vs Z"
     )
     ax_fraction.set_xlim(visible_z.min() - margin, visible_z.max() + margin)
     ax_fraction.legend(fontsize=8)
 
-    # D-19: suptitle carries both disclosures as extra lines (never a bare
-    # fig.text -- constrained_layout reserves space for the suptitle, while
-    # a bare fig.text overlaps the bottom panel, the same clipping class
-    # 08.1-06 fixed for the in-image slit annotation).
+    # Gap closure (user-requested publication cleanup, plan 08.1-12): the
+    # suptitle is now a clean, publication-style title with no citation or
+    # disclosure blurb. The pencil-beam and sampling/slit-mapping
+    # disclosures move to the module docstring and are printed to stdout by
+    # main() instead -- never dropped, just moved out of the figure.
     fig.suptitle(
-        f"light_sheet vs aslm PSF seed comparison (aslm slit_width={slit_width:.2f} um)\n"
-        f"{PENCIL_BEAM_NOTE}\n"
-        f"{SAMPLING_AND_SLIT_NOTE}",
-        fontsize=9,
+        f"Light sheet vs ASLM PSF seed comparison (ASLM slit width = {slit_width:.2f} um)",
+        fontsize=11,
     )
     return fig
 
@@ -835,6 +845,12 @@ def main() -> None:
         f"light_sheet {OFF_WAIST_UM:.1f}um off-waist={fraction_light_sheet_off_waist:.3f}, "
         f"aslm={fraction_aslm:.3f}"
     )
+    # Gap closure (user-requested publication cleanup, plan 08.1-12): these
+    # disclosures used to render into the figure's suptitle; they are now
+    # printed to stdout (and kept in the module docstring's Notes /
+    # limitations section) instead, so the figure itself stays clean.
+    print(PENCIL_BEAM_NOTE)
+    print(SAMPLING_AND_SLIT_NOTE)
 
     fig = build_comparison_figure(
         seed_light_sheet,
