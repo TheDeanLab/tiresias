@@ -41,6 +41,14 @@ itself for publication -- user-directed deviation, plan 08.1-13):
       rather than a smooth rise; the ASLM curve is flat by construction
       under perfect shutter/beam synchronization.
     - Sampling: dz == dxy with ni0 == ni.
+    - Publication follow-up (orchestrator-dispatched): the same periodic
+      light-sheet axial-FWHM spikes described above are visible on this
+      page's "static light sheet" curve at illumination NA 0.25-0.45; the
+      predicted on-axis intensity zero positions responsible for them are
+      marked on the sibling figure
+      (examples/output/light_sheet_resolution_vs_fov.png), not on this
+      page -- adding them here would break this page's fixed two-entry
+      legend contract (tests/test_resolution_vs_fov_by_na.py).
 """
 
 from __future__ import annotations
@@ -72,7 +80,7 @@ X_LABEL = "position along beam propagation axis (um)"
 Y_LABEL = "system-PSF axial FWHM (um)"
 
 LIGHT_SHEET_LABEL = "static light sheet"
-ASLM_LABEL_TEMPLATE = "ASLM (slit_width={:.2f} um)"
+ASLM_LABEL_TEMPLATE = "ASLM (slit width {:.2f} um)"
 
 # D-19/RA-6-disclose: pencil-beam residual disclosure, duplicated per the
 # single-file PEP 723 philosophy (no shared helper module between example
@@ -195,9 +203,9 @@ def build_na_page(
     # forcing one scale across all five pages would flatten the low-NA pages
     # against the high-NA range.
     ax.set_title(
-        f"Resolution vs. FOV at illumination_na={na:.2f}\n"
-        f"detection_na={detection_na:.2f}, slit_width={slit_width:.2f} um, "
-        f"FOV=+-{half_extent:.1f} um"
+        f"Resolution vs. FOV at illumination NA {na:.2f}\n"
+        f"detection NA {detection_na:.2f}, slit width {slit_width:.2f} um, "
+        f"FOV +-{half_extent:.1f} um"
     )
     fig.tight_layout()
     return fig

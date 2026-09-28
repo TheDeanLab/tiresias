@@ -41,6 +41,16 @@ itself for publication -- user-directed deviation, plan 08.1-13):
       rather than a smooth rise; the ASLM curve is flat by construction
       under perfect shutter/beam synchronization.
     - Sampling: dz == dxy with ni0 == ni.
+    - Publication follow-up (orchestrator-dispatched, this figure only): the
+      periodic axial-FWHM spikes visible at illumination NA 0.25-0.45 are
+      marked with thin per-NA tick marks along the top axis edge, at the
+      predicted on-axis intensity zero positions of a hard-aperture
+      (uniformly filled) pencil beam -- closed-form dz = wavelength /
+      (ni * (1 - cos(asin(NA / ni)))), never measured (see
+      .planning/phases/08.1-aslm-slit-model-rework/08.1-13-SUMMARY.md's
+      follow-up section for why measuring was skipped and whether the ticks
+      actually line up with the spikes). This is the same pencil-beam
+      residual named above, not a separate defect.
 """
 
 from __future__ import annotations
@@ -138,6 +148,53 @@ PENCIL_BEAM_NOTE = (
     "under perfect shutter/beam synchronization. Sampling: dz == dxy with "
     "ni0 == ni."
 )
+
+
+def _predicted_on_axis_zero_spacing_um(na: float) -> float:
+    """Return the predicted on-axis intensity zero spacing (um) for a hard-aperture pencil beam.
+
+    Closed-form only -- never measured. Orchestrator-dispatched publication
+    follow-up (see 08.1-13-SUMMARY.md's follow-up section): the periodic
+    light-sheet system-PSF axial FWHM spikes visible at illumination NA
+    0.25-0.45 in `build_sweep_figure` coincide with the on-axis interference
+    zeros of a uniformly filled (hard-aperture) converging pencil beam,
+    spaced by `wavelength / (ni * (1 - cos(theta)))` with
+    `theta = asin(na / ni)`. Measuring this directly (an illumination-only
+    on-axis intensity profile, then a local-minima search) was judged out of
+    scope for this cosmetic-only follow-up -- it would add a new production
+    measurement primitive to `simulate/` requiring its own test suite, well
+    beyond a publication-text fix -- so the closed-form estimate is used
+    instead and labelled "predicted", not "measured", wherever it is
+    displayed.
+    """
+    theta = np.arcsin(na / COMMON["ni"])
+    return COMMON["wavelength"] / (COMMON["ni"] * (1.0 - np.cos(theta)))
+
+
+def _rayleigh_out_of_window_notes(
+    results: list[tuple[float, np.ndarray, np.ndarray, tuple[float, float, float] | None]],
+    half_extent: float,
+) -> list[str]:
+    """Return one note per swept NA's Rayleigh boundary that falls outside the plotted FOV window.
+
+    Publication follow-up (this dispatch): this list used to be concatenated
+    into the figure's title, where it could clip off both edges at the saved
+    figsize. It is now computed here so `main()` can print it to stdout
+    instead -- the figure's title stays a single clean line plus one short
+    parameter line, and no information is dropped, only relocated (same
+    convention plan 08.1-13 already used for the pencil-beam disclosure).
+    """
+    notes: list[str] = []
+    for na, _centered_um, _widths_um, rayleigh in results:
+        if rayleigh is None:
+            continue
+        _waist_um, left_um, right_um = rayleigh
+        for side_name, position_um in (("left", left_um), ("right", right_um)):
+            if not (-half_extent <= position_um <= half_extent):
+                notes.append(
+                    f"NA={na:.2f} {side_name} Rayleigh boundary ({position_um:.1f} um) left the window"
+                )
+    return notes
 
 
 def run_sweep(
@@ -286,15 +343,26 @@ def build_sweep_figure(
     boundary is drawn as a thin dotted vertical line in the same colour as
     that NA's curve -- but only when the boundary position falls inside the
     fixed plotted window (roadmap Success Criterion 2); a boundary that
-    falls outside the window is never drawn off-canvas, and is instead named
-    in the title so the reader learns the Rayleigh point left the window
-    rather than silently seeing nothing. The Rayleigh annotation never
+    falls outside the window is never drawn off-canvas. Publication
+    follow-up (this dispatch): an out-of-window boundary used to be named in
+    the title, where the concatenated list could clip off both edges at the
+    saved figsize -- it is now reported by `_rayleigh_out_of_window_notes`
+    and printed to stdout from `main()` instead, so the title stays one
+    clean line plus one short parameter line. The Rayleigh annotation never
     rescales or redefines the plotted window -- `ax.set_xlim` is always
     pinned to the fixed half-extent computed from `FOV_POSITIONS_UM`,
     independent of any measured Rayleigh position. Exactly one proxy legend
     entry describes the dotted lines, regardless of how many NA values were
     annotated. Any statement about how the curves behave is computed from
     `results`, never written as fixed text.
+
+    Publication follow-up (this dispatch): each NA's predicted (closed-form,
+    never measured -- see `_predicted_on_axis_zero_spacing_um`) on-axis
+    intensity zero positions are marked as thin tick marks along the top
+    axis edge, in the same colour as that NA's curve, clipped to the
+    fixed plotted window exactly like the Rayleigh boundary above. One
+    proxy legend entry describes them, regardless of how many NA values or
+    tick positions were drawn.
     """
     plottable = [
         (na, centered_um, widths_um, rayleigh)
@@ -309,10 +377,33 @@ def build_sweep_figure(
 
     fig, ax = plt.subplots(figsize=(9, 6))
     rayleigh_label_used = False
-    out_of_window_notes: list[str] = []
+    minima_label_used = False
     for na, centered_um, widths_um, rayleigh in plottable:
-        (line,) = ax.plot(centered_um, widths_um, label=f"illumination_na={na:.2f}")
+        (line,) = ax.plot(centered_um, widths_um, label=f"illumination NA {na:.2f}")
         color = line.get_color()
+
+        spacing_um = _predicted_on_axis_zero_spacing_um(na)
+        k = 1
+        tick_um = spacing_um
+        while tick_um <= half_extent:
+            for signed_tick_um in (tick_um, -tick_um):
+                ax.axvline(
+                    signed_tick_um,
+                    color=color,
+                    alpha=0.5,
+                    linewidth=1.0,
+                    ymin=0.94,
+                    ymax=1.0,
+                    label=(
+                        None
+                        if minima_label_used
+                        else "predicted on-axis intensity zero (pencil beam, closed-form)"
+                    ),
+                )
+                minima_label_used = True
+            k += 1
+            tick_um = k * spacing_um
+
         if rayleigh is None:
             continue
         _waist_um, left_um, right_um = rayleigh
@@ -323,22 +414,16 @@ def build_sweep_figure(
                     color=color,
                     linestyle=":",
                     alpha=0.4,
-                    label=None if rayleigh_label_used else "Rayleigh boundary (sqrt(2)x waist width)",
+                    label=None if rayleigh_label_used else "Rayleigh boundary (sqrt(2) x waist width)",
                 )
                 rayleigh_label_used = True
-            else:
-                out_of_window_notes.append(
-                    f"NA={na:.2f} {side_name} Rayleigh boundary ({position_um:.1f} um) left the window"
-                )
 
     ax.set_xlabel("position along beam propagation axis (um)")
     ax.set_ylabel("system-PSF axial FWHM (um)")
     ax.set_xlim(-half_extent, half_extent)
-    title_second_line = f"detection_na={DETECTION_NA:.2f}, FOV=+-{half_extent:.1f} um"
-    if out_of_window_notes:
-        title_second_line += " (" + "; ".join(out_of_window_notes) + ")"
     ax.set_title(
-        "Static light-sheet system-PSF axial FWHM vs. FOV position\n" + title_second_line
+        "Static light sheet: system-PSF axial FWHM vs FOV position\n"
+        f"detection NA {DETECTION_NA:.2f}, FOV +-{half_extent:.1f} um"
     )
     ax.legend()
     fig.tight_layout()
@@ -354,6 +439,13 @@ def main() -> None:
     # in the module docstring's Notes / limitations section) instead, so the
     # figure itself stays clean for publication.
     print(PENCIL_BEAM_NOTE)
+    # Publication follow-up (this dispatch): the per-NA out-of-window
+    # Rayleigh boundary list used to be concatenated into the figure's
+    # title, where it could clip off both edges -- it is now printed here
+    # instead, so no information is dropped, only relocated.
+    half_extent = max(abs(v) for v in FOV_POSITIONS_UM)
+    for note in _rayleigh_out_of_window_notes(results, half_extent):
+        print(note)
     fig = build_sweep_figure(results)
     if fig is None:
         raise SystemExit("no sweep point produced a measurable width -- nothing to plot or save")

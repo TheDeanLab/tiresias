@@ -20,15 +20,15 @@ from tiresias.seeds import generate_theoretical_psf
 
 __all__ = ["measure_beam_width_profile"]
 
-# D-14: private, not exported (D-14) -- __all__ above stays unchanged. Defined
-# separately here and again in simulate/gated_beam_profile.py rather than
-# shared (Phase 8 D-04 forbids a cross-module helper for this duplicated
-# crossing loop). The value matches the rtol=1e-6 float32-noise precedent
-# already established in simulate/tests/test_gated_beam_profile.py. It is
-# costly to change: this exact value is baked into the 09-01 ring-free
-# MEAS-04 fixture verification and every ringed-profile expectation in this
-# phase's tests, so a different value would require recapturing and
-# re-verifying both.
+# D-14: private, not exported (D-14) -- __all__ above stays unchanged. This
+# module's own copy of the rtol=1e-6 float32-noise precedent (Phase 8 D-04
+# forbade a cross-module helper for this crossing loop); the self-gated
+# gated_beam_profile.py module that used to carry a sibling copy was retired
+# in plan 08.1-08 (commit 71789e1) as physically wrong (SC2). It is costly to
+# change: this exact value is baked into the 09-01 ring-free MEAS-04 fixture
+# verification and every ringed-profile expectation in this module's own
+# tests (simulate/tests/test_beam_profile.py), so a different value would
+# require recapturing and re-verifying all of them.
 _LOBE_MIN_RTOL = 1e-6
 
 
