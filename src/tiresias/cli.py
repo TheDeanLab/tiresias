@@ -36,7 +36,17 @@ def _add_optical_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--wavelength", type=float, default=None)
     parser.add_argument("--ni", type=float, default=None)
     parser.add_argument("--ns", type=float, default=None)
-    parser.add_argument("--ni0", type=float, default=None)
+    parser.add_argument(
+        "--ni0",
+        type=float,
+        default=None,
+        help=(
+            "Immersion refractive index the objective was designed for. When omitted, "
+            "psfmodels applies its own design value (1.515, oil), which adds spherical "
+            "aberration and a focal shift for water-immersion setups; pass the same "
+            "value as --ni (for example 1.33) for an aberration-free seed."
+        ),
+    )
     parser.add_argument("--tg", type=float, default=None)
     parser.add_argument("--tg0", type=float, default=None)
     parser.add_argument("--ng", type=float, default=None)
@@ -61,8 +71,30 @@ def _add_optical_arguments(parser: argparse.ArgumentParser) -> None:
         choices=("single", "light_sheet", "aslm"),
         default="single",
     )
-    parser.add_argument("--slit-width", dest="slit_width", type=float, default=None)
-    parser.add_argument("--slit-width-px", dest="slit_width_px", type=int, default=None)
+    parser.add_argument(
+        "--slit-width",
+        dest="slit_width",
+        type=float,
+        default=None,
+        help=(
+            "ASLM slit window FWHM, in the same physical units as --dz. The "
+            "illumination is convolved with this Gaussian window along the beam "
+            "propagation direction (sweep-integrated rolling shutter, assumed "
+            "perfectly synchronized). Widths below one --dz sample apply no "
+            "convolution. Exactly one of --slit-width/--slit-width-px is required "
+            "for --psf-mode aslm."
+        ),
+    )
+    parser.add_argument(
+        "--slit-width-px",
+        dest="slit_width_px",
+        type=int,
+        default=None,
+        help=(
+            "ASLM slit window FWHM as a sample count along the propagation axis, "
+            "converted to physical units with --dz."
+        ),
+    )
     parser.add_argument(
         "--illumination-polar-deg",
         dest="polar_deg",

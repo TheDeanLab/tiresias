@@ -133,12 +133,13 @@ Common PSF-estimation options:
 | `--cache-dir` | `.psf_cache` next to input | Cache directory for merged PSFs. |
 | `--no-psf-cache` | off | Force recomputation. |
 | `--psf-mode` | `single` | Theoretical seed mode: `single`, `light_sheet`, or `aslm`. The default preserves existing behavior exactly. |
-| `--slit-width` | none | ASLM slit gate FWHM in physical units (same units as `--dxy`/`--dz`). Applies only to `aslm` mode; exactly one of `--slit-width` or `--slit-width-px` must be supplied. |
-| `--slit-width-px` | none | ASLM slit gate FWHM as a pixel count, converted to physical units via `--dxy`. Applies only to `aslm` mode; exactly one of `--slit-width` or `--slit-width-px` must be supplied. |
+| `--ni0` | none (psfmodels uses `1.515`) | Immersion refractive index the objective was designed for. Leaving this unset lets psfmodels apply its own design value (`1.515`, oil), which adds spherical aberration and a focal shift for water-immersion setups. Pass the same value as `--ni` (for example `1.33`) for an aberration-free seed. |
+| `--slit-width` | none | ASLM slit window FWHM (same physical units as `--dz`), the Gaussian window the illumination is convolved with along the beam propagation direction. Applies only to `aslm` mode; exactly one of `--slit-width` or `--slit-width-px` must be supplied. |
+| `--slit-width-px` | none | ASLM slit window FWHM as a sample count along the propagation axis, converted to physical units via `--dz`. Applies only to `aslm` mode; exactly one of `--slit-width` or `--slit-width-px` must be supplied. |
 | `--illumination-polar-deg` | `90.0` | Polar angle, in degrees, of the illumination propagation direction, measured from the illumination's own pre-rotation +Z propagation axis. Used by both `light_sheet` and `aslm` modes. The default `90.0` (paired with the azimuthal default below) is the broadside default. |
 | `--illumination-azimuthal-deg` | `0.0` | Azimuthal angle, in degrees, of the illumination propagation direction, measured in the X-Y plane from +X. Used by both `light_sheet` and `aslm` modes. The default `0.0` (paired with the polar default above) is the broadside default. |
 
-These six flags are shared by both `tiresias-estimate-psf` and `tiresias-deconvolve` via the same optical-argument parser.
+These seven flags are shared by both `tiresias-estimate-psf` and `tiresias-deconvolve` via the same optical-argument parser.
 
 The output PSF is a float32 TIFF normalized to sum to one.
 Without `--psf-seed-path`, theoretical seed generation requires
@@ -247,6 +248,11 @@ estimated_psf = estimate_blind_psf_scipy(observed, initial_psf, n_iters=4)
 `tiresias-deconvolve` route their theoretical seed generation through this same
 function, selected by `--psf-mode`.
 
+Every example below passes `ni0` equal to `ni`. `ni0` should equal `ni` unless
+you are deliberately modeling an index mismatch between the objective's design
+immersion and the sample's actual immersion — see the immersion-index entry
+under Known limitations below.
+
 ```python
 from tiresias import generate_psf_seed
 
@@ -258,7 +264,7 @@ seed = generate_psf_seed(
     wavelength=0.561,
     ni=1.33,
     ns=1.33,
-    ni0=None,
+    ni0=1.33,
     tg=None,
     tg0=None,
     ng=None,
@@ -287,7 +293,7 @@ seed = generate_psf_seed(
     wavelength=0.561,
     ni=1.33,
     ns=1.33,
-    ni0=None,
+    ni0=1.33,
     tg=None,
     tg0=None,
     ng=None,
@@ -308,16 +314,16 @@ seed = generate_psf_seed(
 
 `psf_mode="single"` returns the detection seed. `psf_mode="light_sheet"`
 multiplies the detection seed by a rotated illumination seed and normalizes the
-result. `psf_mode="aslm"` builds the same detection-times-rotated-illumination
-product as `light_sheet`, but first multiplies the illumination PSF, in its
-pre-rotation frame, by a narrow Gaussian slit gate — modeling the rolling
-shutter that follows the swept beam waist, assumed perfectly synchronized to
-it.
-
-The slit gate multiplies the illumination PSF in its pre-rotation frame,
-before `rotate_illumination` runs. Applying the gate before rotation is what
-keeps the result correct regardless of the requested illumination direction,
-not only at the broadside default.
+result. `psf_mode="aslm"` models an axially swept light-sheet acquisition: a
+rolling shutter reads out only a narrow slit around the swept beam waist at
+any instant, assumed perfectly synchronized to the sweep. The effective
+illumination is therefore the pre-rotation illumination PSF convolved with a
+Gaussian slit window along the beam propagation direction — a sweep-integrated
+model, not a static per-axis multiply — before `rotate_illumination` runs.
+This applies for every illumination direction, including oblique ones, never
+only at the broadside default. The illumination itself is the same 3-D pencil
+beam that `light_sheet` uses; see the pencil-beam entry under Known
+limitations below.
 
 The illumination propagation direction is set by two angles in degrees:
 `polar_deg`, measured from the illumination's own pre-rotation +Z optical
@@ -340,24 +346,30 @@ spacing, rotated there, and resampled back to the native `(dz, dxy)` grid, so
 a requested angle is an angle in micrometers, not in voxel indices. This
 matters for this package specifically because `dz` is typically several times
 `dxy`; a naive index-space rotation would tilt the beam by a visibly different
-angle than requested. The four axis-aligned directions matching the pre-v1.1
-cardinal cases (the old single-angle rotation parameter's `0`, `90`, `180`,
-and `270` degree values) are delegated to the original rotation code path and
-reproduce pre-v1.1 output exactly; every other direction —
-including orientations with a Y component, which the old single-angle
-parameter could not express at all — uses the physical-space pipeline
-described above.
+angle than requested. This physical-space resample applies to oblique
+directions.
 
-The slit window integrates along the beam propagation direction, pre-rotation
-gate axis 0 (Z), for every direction (D-02).
+The four axis-aligned directions matching the pre-v1.1 cardinal cases (the old
+single-angle rotation parameter's `0`, `90`, `180`, and `270` degree values —
+including the default broadside direction) instead use an axis relabel that
+reproduces pre-v1.1 output exactly. That relabel is geometrically exact only
+when `dz == dxy`: with `dz != dxy`, the relabelled beam's propagation and
+cross-section axes are mis-scaled by `dz`/`dxy`, because the relabel carries no
+resampling step to correct for the anisotropic voxel size. Fixing this with a
+proper physical-space resample at the cardinal directions is deferred (see
+Known limitations below); every non-cardinal direction — including
+orientations with a Y component, which the old single-angle parameter could
+not express at all — already uses the physical-space pipeline described
+above and is unaffected.
 
-The gate itself is a Gaussian taper, not a hard binary mask — pixels outside
-the slit are attenuated smoothly rather than zeroed. `slit_width` is the
-taper's full width at half maximum (FWHM), and the taper is centered on the
-geometric midpoint of the gated axis, matching the centered beam waist that
-`psfmodels` produces. The pixel spacing used to convert the physical FWHM into
-pixels is `dz` when the gate axis is 0 (Z) and `dxy` when it is 1 (Y) or 2
-(X).
+The slit window always integrates along the true beam propagation direction —
+pre-rotation axis 0 — regardless of the requested `(polar_deg, azimuthal_deg)`
+orientation or where that direction ends up after rotation. The window
+is a Gaussian taper, not a hard binary mask — pixels outside the slit are
+attenuated smoothly rather than zeroed. `slit_width` is the taper's full width
+at half maximum (FWHM), and the taper is centered on the geometric midpoint of
+the propagation axis, matching the centered beam waist that `psfmodels`
+produces.
 
 `slit_width` is a physical width in the same units as `dxy` and `dz`
 (micrometers, per Input Expectations). `slit_width_px` is the equivalent
@@ -365,15 +377,12 @@ pixel-count form. Exactly one of the two must be supplied for `psf_mode="aslm"`
 — supplying both, or neither, raises a `ValueError` — and both must be
 positive.
 
-`slit_width_px` is always converted to physical units through `dxy`, even when
-the resolved gate axis is 0 (Z, whose samples are spaced by `dz`) — this is a
-deliberate design decision, not an oversight. If you are gating Z, the
-pixel-count form does not mean "this many Z planes"; prefer the physical
-`slit_width` form when gating Z unless you specifically want the
-`dxy`-scaled behavior.
+`slit_width_px` is converted to physical units via `--dz`/`dz`, the sample
+spacing of the pre-rotation propagation axis — never `dxy`, regardless of
+which axis the beam ends up on after rotation.
 
 The two forms produce identical seeds when the pixel count is scaled by the
-same spacing used for conversion (`dxy`). This example builds the same `aslm`
+same spacing used for conversion (`dz`). This example builds the same `aslm`
 seed two ways — once with a physical `slit_width`, once with an equivalent
 `slit_width_px` — and confirms they match:
 
@@ -389,7 +398,7 @@ common = dict(
     wavelength=0.561,
     ni=1.33,
     ns=1.33,
-    ni0=None,
+    ni0=1.33,
     tg=None,
     tg0=None,
     ng=None,
@@ -407,75 +416,71 @@ common = dict(
 )
 
 seed_px = generate_psf_seed(psf_mode="aslm", slit_width_px=20, **common)
-seed_physical = generate_psf_seed(psf_mode="aslm", slit_width=20 * 0.108, **common)
+seed_physical = generate_psf_seed(psf_mode="aslm", slit_width=20 * 0.300, **common)
 
 print(np.array_equal(seed_px, seed_physical))
 # True
 ```
 
-At the wide end of the `slit_width` range, `aslm` reduces exactly to
-`light_sheet`. Once `slit_width` reaches or exceeds the full extent of the
-gated axis, the Gaussian taper described above is skipped entirely rather than
-merely widened, so `aslm` output is bit-identical to the equivalent
-`light_sheet` output, not just numerically close. Compute that full extent for
-your own parameters from the gated axis's sample count times its pixel
-spacing: `psf_size_xy * dxy` when the gate axis is 1 (Y) or 2 (X) — both axes
-share the lateral pixel count and spacing — or `psf_size_z * dz` when it is 0
-(Z). This is a useful sanity check that your ASLM parameters are
-wired correctly, and it means `aslm` degrades gracefully into the mode you
-already know at wide slit widths rather than failing or producing something
-you cannot reason about.
+### Narrow and wide slit limits
 
-```python
-import numpy as np
+Below one `dz` sample, `slit_width` applies no convolution: the seed is
+identical to `light_sheet` — the waist-limited limit. As `slit_width`
+grows, the seed converges instead to the sweep-average over the simulated
+propagation window; it is not identical to `light_sheet` at any finite width,
+and the value it converges toward depends on how long that window is.
+Between the two limits, axial FWHM is monotonic non-decreasing in
+`slit_width` — see `examples/slit_width_sweep.py`, which measures and
+prints both limits and the trend between them for its own parameters, rather
+than a number fixed here.
 
-from tiresias import generate_psf_seed
+`slit_width` is the FWHM of a Gaussian window. Dean et al. 2015 used a
+hard rectangular slit of width `W = 2*xR`; a Gaussian window with the same
+second moment as that rectangle has FWHM ≈ `0.68*W`. Keep this mapping in mind
+when relating `slit_width` to a rectangular-slit description from the
+literature.
 
-common = dict(
-    na=1.0,
-    detection_na=1.0,
-    illumination_na=0.2,
-    wavelength=0.561,
-    ni=1.33,
-    ns=1.33,
-    ni0=None,
-    tg=None,
-    tg0=None,
-    ng=None,
-    ng0=None,
-    ti0=None,
-    oversample_factor=3,
-    psf_model="vectorial",
-    dxy=0.108,
-    dz=0.300,
-    psf_size_z=61,
-    psf_size_xy=128,
-    background=0.0,
-    polar_deg=90.0,
-    azimuthal_deg=0.0,
-)
+### emitter_offset
 
-# The default direction (polar_deg=90.0, azimuthal_deg=0.0) gates axis 2 (X),
-# whose full extent is psf_size_xy * dxy.
-full_extent = 128 * 0.108
+`emitter_offset` is a Python-API-only keyword on `generate_psf_seed()` — it is
+not a CLI flag. It is the emitter's offset from the illumination waist along
+the beam propagation direction, in the same units as `dxy`/`dz`. Its sign
+follows `psfmodels.tot_psf`'s `x_offset` convention: a positive value moves
+the waist to a smaller pre-rotation axis-0 index. `light_sheet` evaluates the
+beam at this off-waist position, so its axial resolution degrades away from
+the waist. `aslm` is invariant to `emitter_offset`: under the
+perfectly synchronized sweep, the slit tracks the emitter across the whole
+simulated window, so the effective illumination relative to the emitter never
+depends on where the emitter sits. `single` has no illumination beam and
+requires `emitter_offset=0.0`.
 
-seed_light_sheet = generate_psf_seed(psf_mode="light_sheet", **common)
-seed_aslm_full_width = generate_psf_seed(
-    psf_mode="aslm", slit_width=full_extent, **common
-)
+At the waist, `aslm` matches `light_sheet`; the difference between the two
+modes shows up only off the waist, where `light_sheet` loses optical
+sectioning and `aslm` does not — see `examples/light_sheet_vs_aslm.py`.
 
-print(np.array_equal(seed_light_sheet, seed_aslm_full_width))
-# True
-```
+The ASLM slit window is a sweep-integrated convolution along the beam's
+propagation direction, not a time-resolved acquisition simulation. The
+rolling shutter is assumed to be perfectly synchronized with the swept beam
+waist, so the illuminated slit always sits exactly at the waist. There is no
+basis in this codebase for a credible timing-error distribution, so encoding
+one would mean inventing numbers rather than modeling physics. Timing
+jitter, shutter/beam desynchronization, and sweep-velocity error are
+therefore not modeled and are explicitly out of scope for this milestone.
 
-The ASLM slit gate is a fixed spatial taper, not a time-resolved acquisition
-simulation. The rolling shutter is assumed to be perfectly synchronized with
-the swept beam waist, so the illuminated slit always sits exactly at the
-waist. There is no basis in this codebase for a credible timing-error
-distribution, so encoding one would mean inventing numbers rather than
-modeling physics. Timing jitter, shutter/beam desynchronization, and
-sweep-velocity error are therefore not modeled and are explicitly out of
-scope for this milestone.
+### Known limitations
+
+- **Pencil-beam illumination.** `light_sheet` and `aslm` use a 3-D pencil
+  beam, not a sheet integrated over the in-plane lateral axis the way DSLM or
+  cylindrical-lens optics are. Lateral widths are therefore optimistic, and
+  off-waist `light_sheet` axial profiles show Fresnel structure from the
+  pencil beam's on-axis intensity zeros. The fix is deferred.
+- **Cardinal-direction sampling.** The axis-relabel rotation used at the four
+  legacy cardinal directions is exact only when `dz == dxy` (see the rotation
+  discussion above) — the shipped example scripts use cubic voxels for this
+  reason.
+- **Immersion index.** Leaving `ni0` unset (`None`) means psfmodels applies
+  its own design immersion index (`1.515`, oil). Pass `ni0` equal to `ni`
+  unless you are deliberately modeling an index mismatch.
 
 ## Performance Notes
 
@@ -534,17 +539,18 @@ confirm that the input TIFF is a 3-D volume with non-zero signal.
 `aslm` mode needs exactly one width form. Supplying both `slit_width` and
 `slit_width_px`, or neither, raises this error. See the physical-unit vs.
 pixel-count discussion in PSF Seed Modes above to choose the form that fits
-your gate axis.
+the beam propagation axis.
 
-`is too narrow to capture positive illumination energy`
+`ASLM slit-integrated illumination has no positive finite energy`
 
-The requested `slit_width` (or `slit_width_px`) retained no usable
-illumination energy along the gate axis. This guard exists because
-normalizing an all-zero seed would otherwise pass silently into blind
-estimation; the error fires after the detection and illumination PSFs have
-already been generated — `generate_psf_seed` calls `generate_theoretical_psf`
-twice before this guard runs — but before the seed is returned, so with
-`psf_model="vectorial"` two potentially slow optical computations will
-already have run. The ASLM gate is a static slit, perfectly synchronized to
-the beam waist, so there is no timing to adjust — widen `slit_width` (or
-`slit_width_px`) instead.
+The slit-integrated illumination came out non-finite or all-zero after the
+Gaussian window was applied (or skipped, at a sub-`dz` `slit_width`). This
+guard exists because normalizing such a result would otherwise pass silently
+into blind estimation; the error fires after the detection and illumination
+PSFs have already been generated — `generate_psf_seed` calls
+`generate_theoretical_psf` twice before this guard runs — but before the seed
+is returned, so with `psf_model="vectorial"` two potentially slow optical
+computations will already have run. The ASLM model assumes the rolling
+shutter is perfectly synchronized to the swept beam waist, so there is no
+timing to adjust — check the illumination parameters (`illumination_na`,
+`wavelength`, `ni`) and `slit_width`/`slit_width_px` instead.

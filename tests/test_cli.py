@@ -770,6 +770,24 @@ class CliTests(unittest.TestCase):
                 namespace = build_parser().parse_args(minimal_argv)
                 self.assertFalse(hasattr(namespace, retired_attr))
 
+    def test_slit_width_help_describes_the_sweep_integrated_model(self):
+        from tiresias import cli
+
+        for build_parser in (cli.build_estimate_psf_parser, cli.build_deconvolve_parser):
+            with self.subTest(parser=build_parser.__name__):
+                text = " ".join(build_parser().format_help().split())
+                self.assertIn("propagation", text)
+                self.assertIn("--dz", text)
+
+    def test_ni0_help_recommends_matching_the_immersion_index(self):
+        from tiresias import cli
+
+        for build_parser in (cli.build_estimate_psf_parser, cli.build_deconvolve_parser):
+            with self.subTest(parser=build_parser.__name__):
+                text = " ".join(build_parser().format_help().split())
+                self.assertIn("1.515", text)
+                self.assertIn("same value as --ni", text)
+
 
 if __name__ == "__main__":
     unittest.main()
