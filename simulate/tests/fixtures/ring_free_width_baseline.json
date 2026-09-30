@@ -3,6 +3,7 @@
   "_warning": "Pre-fix unbounded-search widths. MUST NEVER be regenerated from post-change source: after Phase 9's central-lobe bounding lands, regenerating would silently re-bless an MEAS-04 regression. Recapture only from a checkout of the commit named in _generated_by.",
   "_ring_free_check": "Every entry verified at capture time: the central-lobe-bounded search (D-01/D-02, rtol = 1e-6 * peak_value per D-14, inclusive truncation at the first flanking local minimum) differs from these widths at 0 positions",
   "_lobe_min_rtol": 1e-06,
+  "_removed_2026_09_29": "gated_beam_profile entries removed per Phase 9 D-45: simulate/gated_beam_profile.py was retired in Phase 8.1 (D-08); git history keeps the original snapshot.",
   "beam_profile": {
     "na0.2_z61_dxy0.108_dz0.3_xy128": {
       "params": {
@@ -414,86 +415,6 @@
       },
       "widths_um": [
         0.7341448608195406
-      ]
-    }
-  },
-  "gated_beam_profile": {
-    "na0.3_z3_slit2.0": {
-      "params": {
-        "illumination_na": 0.3,
-        "wavelength": 0.561,
-        "ni": 1.33,
-        "ns": 1.33,
-        "dxy": 0.108,
-        "dz": 0.3,
-        "slit_width": 2.0,
-        "psf_size_z": 3,
-        "psf_size_xy": 128
-      },
-      "widths_um": [
-        0.8799706884170231,
-        0.8798210747070049,
-        0.8797147189636499
-      ]
-    },
-    "na0.3_z9_slit2.0": {
-      "params": {
-        "illumination_na": 0.3,
-        "wavelength": 0.561,
-        "ni": 1.33,
-        "ns": 1.33,
-        "dxy": 0.108,
-        "dz": 0.3,
-        "slit_width": 2.0,
-        "psf_size_z": 9,
-        "psf_size_xy": 128
-      },
-      "widths_um": [
-        0.8806889700366327,
-        0.8804033866416853,
-        0.8801644644961392,
-        0.8799707156011066,
-        0.8798210721068097,
-        0.8797147367502789,
-        0.8796511379010102,
-        0.8796299549977761,
-        0.8796513024799222
-      ]
-    },
-    "na0.3_z21_slit2.0": {
-      "params": {
-        "illumination_na": 0.3,
-        "wavelength": 0.561,
-        "ni": 1.33,
-        "ns": 1.33,
-        "dxy": 0.108,
-        "dz": 0.3,
-        "slit_width": 2.0,
-        "psf_size_z": 21,
-        "psf_size_xy": 128
-      },
-      "widths_um": [
-        0.8835077421186601,
-        0.8828913929847272,
-        0.8823384937389256,
-        0.8818449520572004,
-        0.8814074098454384,
-        0.8810229567432694,
-        0.8806889933331511,
-        0.8804033897369044,
-        0.8801644662552115,
-        0.8799707561009837,
-        0.8798210420667435,
-        0.8797147309166393,
-        0.8796510860107514,
-        0.8796299592198856,
-        0.8796513467216264,
-        0.8797154414847533,
-        0.8798229654863252,
-        0.8799747227429265,
-        0.8801718459214022,
-        0.8804158932426787,
-        0.8807087175219709
       ]
     }
   }
